@@ -135,3 +135,47 @@ class ClinicMember(models.Model):
     @property
     def is_active(self):
         return self.status == 'active'
+
+
+# ─────────────────────────────────────────────────────────────
+# Clinic Time Slot  (appointment schedule setup during onboarding)
+# ─────────────────────────────────────────────────────────────
+
+class ClinicTimeSlot(models.Model):
+    """
+    Weekly recurring time slots for a clinic.
+    Set up by the clinic owner during onboarding (Step 2).
+    Doctors inherit these slots or override with DoctorAvailability.
+    """
+    DAY_CHOICES = (
+        (0, 'Monday'),
+        (1, 'Tuesday'),
+        (2, 'Wednesday'),
+        (3, 'Thursday'),
+        (4, 'Friday'),
+        (5, 'Saturday'),
+        (6, 'Sunday'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(
+        Clinic, on_delete=models.CASCADE, related_name='time_slots')
+    day_of_week = models.PositiveSmallIntegerField(choices=DAY_CHOICES)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    slot_duration_minutes = models.PositiveSmallIntegerField(
+        default=15, help_text="Duration of each appointment slot in minutes")
+    max_appointments = models.PositiveSmallIntegerField(
+        default=20, help_text="Max appointments in this time window")
+    is_active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'clinic_time_slot'
+        ordering = ['day_of_week', 'start_time']
+        unique_together = ('clinic', 'day_of_week', 'start_time')
+
+    def __str__(self):
+        day_name = dict(self.DAY_CHOICES).get(self.day_of_week, '')
+        return f"{self.clinic.name} — {day_name} {self.start_time}–{self.end_time}"

@@ -12,6 +12,17 @@ gender_choice = (
     ("others", "others")
 )
 
+blood_group_choices = (
+    ("A+", "A+"),
+    ("A-", "A-"),
+    ("B+", "B+"),
+    ("B-", "B-"),
+    ("AB+", "AB+"),
+    ("AB-", "AB-"),
+    ("O+", "O+"),
+    ("O-", "O-"),
+)
+
 
 class Role(models.Model):
 
@@ -82,6 +93,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(max_length=100, blank=True, null=True)
     age = models.PositiveIntegerField(default=18)
     gender = models.CharField(max_length=100, choices=gender_choice, default=None, null=True)
+    blood_group = models.CharField(max_length=5, choices=blood_group_choices, blank=True, null=True)
     roles = models.ForeignKey(Role, on_delete=models.CASCADE, default=3)
     contact = models.BigIntegerField(default=0, unique=True, blank=True, null=True)
     avatar = models.ImageField(upload_to='avatar/', blank=True, null=True)
@@ -128,3 +140,43 @@ class UserAddress(models.Model):
     class Meta:
         db_table = "user_address"
 
+
+# ─────────────────────────────────────────────────────────────
+# Patient Medical Profile (filled during Step 2 onboarding)
+# ─────────────────────────────────────────────────────────────
+
+class PatientMedicalProfile(models.Model):
+    """
+    Extended medical details for patients.
+    Created/updated during Step 2 of patient onboarding.
+    """
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name='medical_profile')
+    allergies = models.TextField(
+        blank=True, null=True,
+        help_text="Known allergies (food, drug, environmental)")
+    chronic_conditions = models.TextField(
+        blank=True, null=True,
+        help_text="Chronic conditions e.g. Diabetes, Hypertension")
+    current_medications = models.TextField(
+        blank=True, null=True,
+        help_text="Medications currently being taken")
+    past_surgeries = models.TextField(
+        blank=True, null=True,
+        help_text="History of surgeries")
+    family_history = models.TextField(
+        blank=True, null=True,
+        help_text="Family medical history")
+    emergency_contact_name = models.CharField(max_length=100, blank=True, null=True)
+    emergency_contact_number = models.BigIntegerField(blank=True, null=True)
+    height_cm = models.PositiveIntegerField(blank=True, null=True)
+    weight_kg = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Medical profile: {self.user.name or self.user.contact}"
+
+    class Meta:
+        db_table = "patient_medical_profile"

@@ -1,6 +1,6 @@
 # QuickCare — Hospital Management System API
 
-A Django REST Framework backend for managing online appointment booking and document sharing with patient consent. Built for clinics, hospitals, and diagnostic centres.
+A Django REST Framework backend for managing clinic registrations, appointment booking, and document sharing with patient consent. Built for clinics, hospitals, and diagnostic centres.
 
 ---
 
@@ -10,7 +10,7 @@ A Django REST Framework backend for managing online appointment booking and docu
 |---|---|
 | Framework | Django 6.0.2 + Django REST Framework 3.16 |
 | Auth | JWT via `djangorestframework-simplejwt` |
-| Database | PostgreSQL (Render) |
+| Database | PostgreSQL (Render) / SQLite (local dev) |
 | OTP | `pyotp` TOTP (6-digit, 10-min window) |
 | Config | `python-decouple` (.env) |
 | File Uploads | Pillow + Django FileField |
@@ -25,15 +25,15 @@ git clone <repo-url>
 cd QuickCare
 
 # 2. Create virtual environment
-python -m venv venv
-source venv/bin/activate
+python -m venv jenv
+source jenv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
 
 # 4. Configure environment
 cp .env.example .env
-# Edit .env with your credentials
+# Edit .env — set USE_SQLITE=True for local dev
 
 # 5. Run migrations
 python manage.py migrate
@@ -45,7 +45,13 @@ for id_, name in [(1,'Superadmin'),(2,'Admin'),(3,'Patient'),(4,'Doctor'),(5,'Re
     Role.objects.get_or_create(id=id_, defaults={'name': name})
 "
 
-# 7. Start server
+# 7. Create superuser
+python manage.py shell -c "
+from users.models import User
+User.objects.create_superuser(contact=9999999999, password='admin@123', name='Super Admin')
+"
+
+# 8. Start server
 python manage.py runserver
 ```
 
@@ -58,7 +64,7 @@ All protected endpoints require:
 Authorization: Bearer <access_token>
 ```
 
-Tokens are obtained via the OTP login flow. The system uses **contact number** (mobile) as the username — no email required.
+Tokens are returned after OTP login or registration. The system uses **contact number** (mobile) as the username — no email needed.
 
 ### User Roles
 
@@ -70,7 +76,35 @@ Tokens are obtained via the OTP login flow. The system uses **contact number** (
 | 4 | Doctor | Must belong to a clinic |
 | 5 | Receptionist | Clinic staff |
 | 6 | Lab Member | Must belong to a clinic |
-| 7 | Clinic Owner | Creates & manages clinics |
+| 7 | Clinic Owner | Creates & manages clinics, adds doctors |
+
+---
+
+## 🔄 Registration & Login Flows
+
+### Patient Registration (3 steps)
+```
+Step 1: POST /api/users/onboarding/patient/step1/  → contact + name + password → OTP sent to phone
+Step 2: POST /api/users/onboarding/patient/step2/  → contact + otp → account created → 🔑 JWT
+Step 3: PUT  /api/users/onboarding/patient/step3/  → fill profile + medical details
+```
+
+### Clinic Owner Registration (3 steps)
+```
+Step 1: POST /api/users/onboarding/clinic/step1/   → contact + name + password → OTP sent to phone
+Step 2: POST /api/users/onboarding/clinic/step2/   → contact + otp → account created → 🔑 JWT
+Step 3: POST /api/clinics/onboarding/step3/        → clinic details + time slots
+```
+
+After Step 3, `is_complete_onboarding = true` and the owner can add doctors from their dashboard.
+
+### Login (existing users — no OTP needed)
+```
+POST /api/users/login/   → contact + password → verified against DB → 🔑 JWT
+```
+
+> OTP is only used during **registration** to verify the phone number is real. After that, login is always contact + password.
+
 
 ---
 
@@ -78,65 +112,24 @@ Tokens are obtained via the OTP login flow. The system uses **contact number** (
 
 **Base URL:** `http://localhost:8000`
 
-All endpoints are prefixed with `/api/`.
+All endpoints are prefixed with `/api/`.  
+🔒 = requires `Authorization: Bearer <token>`
 
 ---
 
 ## 👤 Users — `/api/users/`
 
-### Generate OTP (Login)
+### Login
 ```
-POST /api/users/otp/generate/
+POST /api/users/login/
 ```
-Sends OTP to an existing user's contact number.
-
-**Request:**
-```json
-{
-  "contact": 9876543210
-}
-```
-**Response `200`:**
-```json
-{
-  "message": "OTP sent successfully."
-}
-```
-
----
-
-### Generate OTP (Signup)
-```
-POST /api/users/otp/generate/signup/
-```
-Sends OTP to any contact number (new user registration flow).
-
-**Request:**
-```json
-{
-  "contact": 9876543210
-}
-```
-**Response `200`:**
-```json
-{
-  "message": "OTP sent successfully."
-}
-```
-
----
-
-### Verify OTP (Login)
-```
-POST /api/users/otp/verify/
-```
-Verifies OTP and returns JWT tokens.
+Standard login with contact + password. No OTP needed — verified directly against the database.
 
 **Request:**
 ```json
 {
   "contact": 9876543210,
-  "otp": "482910"
+  "password": "secret123"
 }
 ```
 **Response `200`:**
@@ -148,30 +141,9 @@ Verifies OTP and returns JWT tokens.
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "name": "Raj Kumar",
     "contact": 9876543210,
-    "roles": 3
+    "roles": { "id": 3, "name": "is_patient" },
+    "is_complete_onboarding": true
   }
-}
-```
-
----
-
-### Verify OTP (Signup)
-```
-POST /api/users/otp/verify/signup/
-```
-Validates OTP before registration — does **not** create the user.
-
-**Request:**
-```json
-{
-  "contact": 9876543210,
-  "otp": "482910"
-}
-```
-**Response `200`:**
-```json
-{
-  "message": "OTP verified. Proceed to registration."
 }
 ```
 
@@ -183,66 +155,295 @@ POST /api/users/token/refresh/
 ```
 **Request:**
 ```json
+{ "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." }
+```
+**Response `200`:**
+```json
+{ "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." }
+```
+
+---
+
+## 🧍 Patient Registration
+
+### Step 1 — Send OTP
+```
+POST /api/users/onboarding/patient/step1/
+```
+Accepts contact + name + password. Stores them temporarily and sends OTP to the phone number.
+
+**Request:**
+```json
 {
-  "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  "contact": 9876543210,
+  "name": "Rahul Sharma",
+  "password": "secret123"
 }
 ```
 **Response `200`:**
 ```json
 {
-  "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  "message": "OTP sent to your contact number. Please verify to complete registration.",
+  "contact": 9876543210,
+  "next_step": "/api/users/onboarding/patient/step2/"
 }
 ```
 
 ---
 
-### Register User
+### Step 2 — Verify OTP → Account Created
 ```
-POST /api/users/register/
+POST /api/users/onboarding/patient/step2/
 ```
-Creates a new user account (call after OTP verification).
+Verifies OTP. On success, creates the user account and returns JWT.
 
 **Request:**
 ```json
 {
-  "name": "Raj Kumar",
   "contact": 9876543210,
-  "roles": 3
+  "otp": "482910"
 }
 ```
 **Response `201`:**
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "name": "Raj Kumar",
-  "contact": 9876543210,
-  "roles": 3
+  "message": "OTP verified. Account created! Please complete your profile.",
+  "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": "550e8400-...",
+    "name": "Rahul Sharma",
+    "contact": 9876543210,
+    "roles": { "id": 3, "name": "is_patient" },
+    "is_partial_onboarding": true,
+    "is_complete_onboarding": false
+  },
+  "next_step": "/api/users/onboarding/patient/step3/"
 }
 ```
 
 ---
 
+### Step 3 — Complete Profile & Medical Details
+```
+PUT /api/users/onboarding/patient/step3/     🔒
+```
+Saves basic info (gender, age, email, blood group, address) and medical details. Sets `is_complete_onboarding = true`.
+
+**Request:**
+```json
+{
+  "gender": "male",
+  "age": 28,
+  "email": "rahul@example.com",
+  "blood_group": "B+",
+  "address_area": "Near City Hospital",
+  "house_no": "12A",
+  "town": "Jaipur",
+  "state": "Rajasthan",
+  "pincode": "302001",
+  "landmark": "Opp. SBI Bank",
+  "allergies": "Penicillin",
+  "chronic_conditions": "None",
+  "current_medications": "None",
+  "past_surgeries": "Appendectomy 2020",
+  "family_history": "Diabetes (father)",
+  "height_cm": 175,
+  "weight_kg": 70.5,
+  "emergency_contact_name": "Priya Sharma",
+  "emergency_contact_number": 9123456789
+}
+```
+All fields except `gender` and `age` are optional.
+
+**Response `200`:**
+```json
+{
+  "message": "Registration complete! Welcome to QuickCare.",
+  "user": {
+    "id": "550e8400-...",
+    "name": "Rahul Sharma",
+    "gender": "male",
+    "age": 28,
+    "blood_group": "B+",
+    "is_complete_onboarding": true
+  },
+  "medical_profile": {
+    "allergies": "Penicillin",
+    "chronic_conditions": "None",
+    "height_cm": 175,
+    "weight_kg": "70.50",
+    "emergency_contact_name": "Priya Sharma",
+    "emergency_contact_number": 9123456789
+  }
+}
+```
+
+`blood_group` options: `A+` `A-` `B+` `B-` `AB+` `AB-` `O+` `O-`
+
+---
+
+## 🏥 Clinic Owner Registration
+
+### Step 1 — Send OTP
+```
+POST /api/users/onboarding/clinic/step1/
+```
+Accepts contact + name + password. Sends OTP to the phone number.
+
+**Request:**
+```json
+{
+  "contact": 9876543210,
+  "name": "Dr. Anil Gupta",
+  "password": "secret123"
+}
+```
+**Response `200`:**
+```json
+{
+  "message": "OTP sent to your contact number. Please verify to complete registration.",
+  "contact": 9876543210,
+  "next_step": "/api/users/onboarding/clinic/step2/"
+}
+```
+
+---
+
+### Step 2 — Verify OTP → Account Created
+```
+POST /api/users/onboarding/clinic/step2/
+```
+Verifies OTP. On success, creates the Clinic Owner account and returns JWT.
+
+**Request:**
+```json
+{
+  "contact": 9876543210,
+  "otp": "482910"
+}
+```
+**Response `201`:**
+```json
+{
+  "message": "OTP verified. Account created! Please complete clinic registration.",
+  "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": "...",
+    "name": "Dr. Anil Gupta",
+    "roles": { "id": 7, "name": "is_clinic_owner" },
+    "is_partial_onboarding": true,
+    "is_complete_onboarding": false
+  },
+  "next_step": "/api/clinics/onboarding/step3/"
+}
+```
+
+---
+
+### Step 3 — Create Clinic + Time Slots
+```
+POST /api/clinics/onboarding/step3/     🔒
+```
+Creates the clinic and sets up weekly appointment time slots in one request. Sets `is_complete_onboarding = true`.
+
+**Request:**
+```json
+{
+  "name": "City Care Clinic",
+  "clinic_type": "clinic",
+  "phone": "9876543210",
+  "email": "citycare@example.com",
+  "address": "12, MG Road",
+  "city": "Jaipur",
+  "state": "Rajasthan",
+  "pincode": "302001",
+  "registration_number": "RJ-MED-2024-001",
+  "description": "Multi-specialty OPD clinic",
+  "time_slots": [
+    { "day_of_week": 0, "start_time": "09:00", "end_time": "13:00", "slot_duration_minutes": 15, "max_appointments": 20 },
+    { "day_of_week": 0, "start_time": "17:00", "end_time": "20:00", "slot_duration_minutes": 15, "max_appointments": 15 },
+    { "day_of_week": 1, "start_time": "09:00", "end_time": "13:00", "slot_duration_minutes": 15, "max_appointments": 20 }
+  ]
+}
+```
+
+`clinic_type`: `clinic` | `hospital` | `diagnostic_center` | `polyclinic`  
+`day_of_week`: `0`=Monday `1`=Tuesday `2`=Wednesday `3`=Thursday `4`=Friday `5`=Saturday `6`=Sunday
+
+**Response `201`:**
+```json
+{
+  "message": "Clinic registration complete! You can now add doctors from your dashboard.",
+  "clinic": {
+    "id": "a1b2c3d4-...",
+    "name": "City Care Clinic",
+    "slug": "city-care-clinic",
+    "clinic_type": "clinic",
+    "city": "Jaipur",
+    "member_count": 0
+  },
+  "time_slots": [
+    {
+      "id": "b2c3d4e5-...",
+      "day_of_week": 0,
+      "day_name": "Monday",
+      "start_time": "09:00:00",
+      "end_time": "13:00:00",
+      "slot_duration_minutes": 15,
+      "max_appointments": 20,
+      "is_active": true
+    }
+  ]
+}
+```
+
+---
+
+## 👤 User — General Endpoints
+
 ### Get / Update Current User
 ```
-GET  /api/users/me/         🔒
-PUT  /api/users/me/         🔒
+GET  /api/users/me/     🔒
+PUT  /api/users/me/     🔒
 ```
 **GET Response `200`:**
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "name": "Raj Kumar",
+  "id": "550e8400-...",
+  "name": "Rahul Sharma",
   "contact": 9876543210,
-  "roles": 3,
-  "avatar": null,
-  "email": null
+  "email": "rahul@example.com",
+  "age": 28,
+  "gender": "male",
+  "blood_group": "B+",
+  "roles": { "id": 3, "name": "is_patient" },
+  "is_partial_onboarding": false,
+  "is_complete_onboarding": true
 }
 ```
-**PUT Request:**
+
+---
+
+### Get / Update Medical Profile
+```
+GET  /api/users/me/medical-profile/     🔒
+PUT  /api/users/me/medical-profile/     🔒
+```
+**GET Response `200`:**
 ```json
 {
-  "name": "Raj Kumar Updated",
-  "email": "raj@example.com"
+  "allergies": "Penicillin",
+  "chronic_conditions": "None",
+  "current_medications": "None",
+  "past_surgeries": "Appendectomy 2020",
+  "family_history": "Diabetes (father)",
+  "height_cm": 175,
+  "weight_kg": "70.50",
+  "emergency_contact_name": "Priya Sharma",
+  "emergency_contact_number": 9123456789,
+  "updated_at": "2026-02-24T10:00:00Z"
 }
 ```
 
@@ -252,33 +453,24 @@ PUT  /api/users/me/         🔒
 ```
 GET /api/users/check/?contact=9876543210
 ```
-Checks if a contact number is already registered.
-
 **Response `200`:**
 ```json
-{
-  "exists": true,
-  "name": "Raj Kumar"
-}
+{ "exists": true }
 ```
 
 ---
 
 ### Change Password
 ```
-POST /api/users/password/change/     🔒
+PUT /api/users/password/change/     🔒
 ```
 **Request:**
 ```json
-{
-  "password": "NewSecurePass@123"
-}
+{ "password": "NewSecurePass@123" }
 ```
 **Response `200`:**
 ```json
-{
-  "message": "Password changed successfully."
-}
+{ "message": "Password changed successfully." }
 ```
 
 ---
@@ -291,13 +483,17 @@ POST /api/users/address/     🔒
 **POST Request:**
 ```json
 {
-  "address_line1": "123 MG Road",
-  "address_line2": "Near City Mall",
-  "city": "Jaipur",
+  "area": "Vaishali Nagar",
+  "house_no": "12A",
+  "town": "Jaipur",
   "state": "Rajasthan",
-  "pincode": "302001"
+  "pincode": "302021",
+  "landmark": "Near SBI",
+  "address_type": "home",
+  "is_current": true
 }
 ```
+`address_type`: `home` | `work`
 
 ---
 
@@ -312,13 +508,13 @@ DELETE /api/users/address/<id>/     🔒
 
 ## 🏥 Clinics — `/api/clinics/`
 
-> Clinic owners manage their clinics. Doctors/lab members **must** belong to a clinic — they cannot operate independently.
+> Doctors/lab members **must** belong to a clinic — they cannot operate independently.
 
-### Browse Public Clinics (No Auth)
+### Browse Public Clinics
 ```
 GET /api/clinics/public/
 ```
-Optional query params: `?clinic_type=hospital`, `?search=Apollo`, `?city=Jaipur`
+Query params: `?city=Jaipur`, `?type=hospital`, `?search=Apollo`
 
 **Response `200`:**
 ```json
@@ -342,38 +538,13 @@ Optional query params: `?clinic_type=hospital`, `?search=Apollo`, `?city=Jaipur`
 GET  /api/clinics/     🔒 (Clinic Owner)
 POST /api/clinics/     🔒 (Clinic Owner)
 ```
-**POST Request:**
-```json
-{
-  "name": "MedPlus Clinic",
-  "clinic_type": "clinic",
-  "address": "45 Vaishali Nagar, Jaipur",
-  "city": "Jaipur",
-  "state": "Rajasthan",
-  "pincode": "302021",
-  "phone": "9111111111",
-  "email": "info@medplus.com"
-}
-```
-`clinic_type` options: `clinic` | `hospital` | `diagnostic_center` | `polyclinic`
-
-**Response `201`:**
-```json
-{
-  "id": "a1b2c3d4-...",
-  "name": "MedPlus Clinic",
-  "slug": "medplus-clinic",
-  "clinic_type": "clinic",
-  "city": "Jaipur",
-  "member_count": 0
-}
-```
+> Use `POST /api/clinics/onboarding/step2/` during initial registration. Use this endpoint to create additional clinics later.
 
 ---
 
 ### Get / Update / Delete Clinic
 ```
-GET    /api/clinics/<clinic_id>/     🔒
+GET    /api/clinics/<clinic_id>/     (Public)
 PUT    /api/clinics/<clinic_id>/     🔒 (Owner only)
 DELETE /api/clinics/<clinic_id>/     🔒 (Owner only — soft delete)
 ```
@@ -387,12 +558,13 @@ POST /api/clinics/<clinic_id>/members/     🔒 (Owner)
 ```
 **GET** query params: `?role=doctor`, `?status=active`
 
-**POST Request** (add by contact number):
+**POST Request** (add by contact number — user must already be registered):
 ```json
 {
   "contact": 9988776655,
   "member_role": "doctor",
-  "department": "Cardiology"
+  "department": "Cardiology",
+  "joined_at": "2026-02-24"
 }
 ```
 `member_role` options: `doctor` | `lab_member` | `receptionist`
@@ -409,10 +581,10 @@ POST /api/clinics/<clinic_id>/members/     🔒 (Owner)
   "member_role": "doctor",
   "status": "active",
   "department": "Cardiology",
-  "joined_at": "2026-02-24T10:00:00Z"
+  "joined_at": "2026-02-24"
 }
 ```
-> 📝 If `member_role` is `doctor`, a `DoctorProfile` is automatically created for the user.
+> 📝 Adding a `doctor` member automatically creates a `DoctorProfile` for them.
 
 ---
 
@@ -420,14 +592,54 @@ POST /api/clinics/<clinic_id>/members/     🔒 (Owner)
 ```
 GET    /api/clinics/<clinic_id>/members/<member_id>/     🔒 (Owner)
 PUT    /api/clinics/<clinic_id>/members/<member_id>/     🔒 (Owner)
-DELETE /api/clinics/<clinic_id>/members/<member_id>/     🔒 (Owner — sets status=inactive)
+DELETE /api/clinics/<clinic_id>/members/<member_id>/     🔒 (Owner — soft remove)
 ```
 **PUT Request:**
 ```json
 {
-  "status": "inactive",
-  "department": "Neurology"
+  "department": "Neurology",
+  "notes": "Visiting doctor, available Tues/Thurs"
 }
+```
+DELETE sets `status = inactive` and records `left_at` date. The user account is not deleted.
+
+---
+
+### Clinic Time Slots — List / Add
+```
+GET  /api/clinics/<clinic_id>/slots/     (Public)
+POST /api/clinics/<clinic_id>/slots/     🔒 (Owner)
+```
+**POST Request:**
+```json
+{
+  "day_of_week": 5,
+  "start_time": "10:00",
+  "end_time": "14:00",
+  "slot_duration_minutes": 20,
+  "max_appointments": 12
+}
+```
+**Response `201`:**
+```json
+{
+  "id": "c3d4e5f6-...",
+  "day_of_week": 5,
+  "day_name": "Saturday",
+  "start_time": "10:00:00",
+  "end_time": "14:00:00",
+  "slot_duration_minutes": 20,
+  "max_appointments": 12,
+  "is_active": true
+}
+```
+
+---
+
+### Clinic Time Slots — Update / Deactivate
+```
+PUT    /api/clinics/<clinic_id>/slots/<slot_id>/     🔒 (Owner)
+DELETE /api/clinics/<clinic_id>/slots/<slot_id>/     🔒 (Owner — deactivates)
 ```
 
 ---
@@ -441,15 +653,12 @@ GET /api/clinics/my/memberships/     🔒
 [
   {
     "id": "b2c3d4e5-...",
-    "clinic": {
-      "id": "a1b2c3d4-...",
-      "name": "Apollo Clinic",
-      "city": "Jaipur"
-    },
+    "clinic": "a1b2c3d4-...",
+    "clinic_name": "Apollo Clinic",
     "member_role": "doctor",
     "status": "active",
     "department": "Cardiology",
-    "joined_at": "2026-02-24T10:00:00Z"
+    "joined_at": "2026-02-24"
   }
 ]
 ```
@@ -462,16 +671,15 @@ GET /api/clinics/my/memberships/     🔒
 ```
 GET /api/doctors/
 ```
-Only returns doctors who are **active members** of a clinic.
+Only returns doctors who are **active members** of at least one clinic.
 
-Query params:
-| Param | Example | Description |
+| Query Param | Example | Description |
 |---|---|---|
 | `clinic` | `?clinic=a1b2c3d4-...` | Filter by clinic UUID |
 | `specialty` | `?specialty=cardiology` | Filter by specialty |
-| `min_fee` | `?min_fee=200` | Min first visit fee |
-| `max_fee` | `?max_fee=1000` | Max first visit fee |
-| `video` | `?video=true` | Offers video consultation |
+| `min_fee` | `?min_fee=200` | Min first-visit fee |
+| `max_fee` | `?max_fee=1000` | Max first-visit fee |
+| `video` | `?video=true` | Offers video consult |
 | `search` | `?search=Dr. Sharma` | Search by name |
 
 **Response `200`:**
@@ -495,8 +703,7 @@ Query params:
         "clinic_id": "a1b2c3d4-...",
         "clinic_name": "Apollo Clinic",
         "city": "Jaipur",
-        "department": "Cardiology",
-        "joined_at": "2026-02-24"
+        "department": "Cardiology"
       }
     ]
   }
@@ -514,8 +721,8 @@ GET /api/doctors/<id>/
 
 ### Get / Update My Doctor Profile
 ```
-GET /api/doctors/me/     🔒 (Doctor)
-PUT /api/doctors/me/     🔒 (Doctor)
+GET  /api/doctors/me/     🔒 (Doctor)
+PUT  /api/doctors/me/     🔒 (Doctor)
 ```
 > Profile is auto-created when a clinic adds you. Use PUT to update professional details.
 
@@ -536,7 +743,7 @@ PUT /api/doctors/me/     🔒 (Doctor)
 
 ---
 
-### Doctor Availability (Schedule)
+### Doctor Availability
 ```
 GET  /api/doctors/<doctor_id>/availability/              (Public)
 POST /api/doctors/<doctor_id>/availability/     🔒 (Doctor)
@@ -552,7 +759,7 @@ POST /api/doctors/<doctor_id>/availability/     🔒 (Doctor)
   "max_patients": 20
 }
 ```
-`day` options: `monday` | `tuesday` | `wednesday` | `thursday` | `friday` | `saturday` | `sunday`
+`day` options: `monday` `tuesday` `wednesday` `thursday` `friday` `saturday` `sunday`
 
 ---
 
@@ -560,16 +767,12 @@ POST /api/doctors/<doctor_id>/availability/     🔒 (Doctor)
 ```
 GET /api/doctors/<doctor_id>/availability/slots/?date=2026-03-01&clinic_id=a1b2c3d4-...
 ```
-Returns list of available time slots for a specific date.
-
 **Response `200`:**
 ```json
 {
   "doctor": 1,
   "date": "2026-03-01",
-  "available_slots": [
-    "09:00", "09:15", "09:30", "09:45", "10:00"
-  ]
+  "available_slots": ["09:00", "09:15", "09:30", "09:45", "10:00"]
 }
 ```
 
@@ -577,9 +780,9 @@ Returns list of available time slots for a specific date.
 
 ### Doctor Leaves
 ```
-GET    /api/doctors/me/leaves/                  🔒 (Doctor)
-POST   /api/doctors/me/leaves/                  🔒 (Doctor)
-DELETE /api/doctors/me/leaves/<leave_id>/       🔒 (Doctor)
+GET    /api/doctors/me/leaves/                    🔒 (Doctor)
+POST   /api/doctors/me/leaves/                    🔒 (Doctor)
+DELETE /api/doctors/me/leaves/<leave_id>/         🔒 (Doctor)
 ```
 **POST Request:**
 ```json
@@ -622,7 +825,7 @@ POST /api/appointments/my/     🔒 (Patient)
   "id": 1,
   "doctor": {
     "id": 1,
-    "user": {"name": "Dr. Priya Sharma"},
+    "user": { "name": "Dr. Priya Sharma" },
     "specialty": "cardiology"
   },
   "appointment_date": "2026-03-01",
@@ -637,14 +840,12 @@ POST /api/appointments/my/     🔒 (Patient)
 
 ### Patient: Get / Cancel Appointment
 ```
-GET    /api/appointments/my/<id>/     🔒 (Patient)
-PATCH  /api/appointments/my/<id>/     🔒 (Patient — cancel only)
+GET   /api/appointments/my/<id>/     🔒 (Patient)
+PATCH /api/appointments/my/<id>/     🔒 (Patient — cancel only)
 ```
-**PATCH Request (cancel):**
+**PATCH Request:**
 ```json
-{
-  "status": "cancelled"
-}
+{ "status": "cancelled" }
 ```
 
 ---
@@ -664,9 +865,7 @@ PATCH /api/appointments/doctor/<id>/     🔒 (Doctor)
 ```
 **PATCH Request:**
 ```json
-{
-  "status": "confirmed"
-}
+{ "status": "confirmed" }
 ```
 `status` options: `pending` | `confirmed` | `completed` | `cancelled` | `no_show`
 
@@ -674,7 +873,7 @@ PATCH /api/appointments/doctor/<id>/     🔒 (Doctor)
 
 ## 📄 Documents — `/api/documents/`
 
-> Patient owns documents. Doctors must request consent before accessing them. All access is logged.
+> Patient owns documents. Doctors must request consent before accessing. All access is logged.
 
 ### List / Upload Documents
 ```
@@ -683,13 +882,13 @@ POST /api/documents/     🔒
 ```
 **POST Request** (multipart/form-data):
 ```
-file         = <file>
-title        = Blood Test Report
+file          = <file>
+title         = Blood Test Report
 document_type = lab_report
-description  = CBC report dated 2026-02-20
-appointment  = 1   (optional)
+description   = CBC report dated 2026-02-20
+appointment   = 1   (optional)
 ```
-`document_type` options: `prescription` | `lab_report` | `imaging` | `discharge_summary` | `insurance` | `other`
+`document_type`: `prescription` | `lab_report` | `imaging` | `discharge_summary` | `insurance` | `other`
 
 **GET** — Patients see their own docs; Doctors see docs they have active consent for.
 
@@ -700,7 +899,7 @@ appointment  = 1   (optional)
 GET    /api/documents/<uuid>/     🔒
 DELETE /api/documents/<uuid>/     🔒 (Owner only — soft delete)
 ```
-> Accessing a document creates an entry in the audit log automatically.
+> Accessing a document automatically creates an audit log entry.
 
 ---
 
@@ -736,44 +935,25 @@ GET /api/documents/consent/mine/     🔒 (Patient)
 ```
 Query params: `?status=pending`
 
-**Response `200`:**
-```json
-[
-  {
-    "id": "c3d4e5f6-...",
-    "document": {
-      "id": "550e8400-...",
-      "title": "Blood Test Report"
-    },
-    "doctor": {
-      "id": 1,
-      "user": {"name": "Dr. Priya Sharma"}
-    },
-    "status": "pending",
-    "purpose": "Reviewing prior lab results before consultation",
-    "expires_at": "2026-03-10T23:59:00Z"
-  }
-]
-```
-
 ---
 
 ### Patient: Grant / Reject / Revoke Consent
 ```
 PATCH /api/documents/consent/<consent_id>/action/     🔒 (Patient)
 ```
-**Grant:**
+**Request:**
 ```json
 { "action": "grant" }
 ```
-**Reject:**
-```json
-{ "action": "reject" }
+`action` options: `grant` | `reject` | `revoke`
+
+Consent transitions:
 ```
-**Revoke** (after granting):
-```json
-{ "action": "revoke" }
+pending → granted
+pending → rejected
+granted → revoked
 ```
+
 **Response `200`:**
 ```json
 {
@@ -781,13 +961,6 @@ PATCH /api/documents/consent/<consent_id>/action/     🔒 (Patient)
   "status": "granted",
   "actioned_at": "2026-02-24T11:30:00Z"
 }
-```
-
-Consent state transitions:
-```
-pending → granted
-pending → rejected
-granted → revoked
 ```
 
 ---
@@ -802,8 +975,8 @@ Query params: `?status=granted`, `?status=pending`
 
 ### Document Access Audit Log
 ```
-GET /api/documents/access-log/                  🔒 (Patient — all their docs)
-GET /api/documents/<doc_id>/access-log/         🔒 (Patient — specific doc)
+GET /api/documents/access-log/              🔒 (Patient — all their docs)
+GET /api/documents/<doc_id>/access-log/     🔒 (Patient — specific doc)
 ```
 **Response `200`:**
 ```json
@@ -811,10 +984,7 @@ GET /api/documents/<doc_id>/access-log/         🔒 (Patient — specific doc)
   {
     "id": "d4e5f6g7-...",
     "document": "550e8400-...",
-    "accessed_by": {
-      "id": "...",
-      "name": "Dr. Priya Sharma"
-    },
+    "accessed_by": { "id": "...", "name": "Dr. Priya Sharma" },
     "accessed_at": "2026-02-24T12:00:00Z",
     "ip_address": "103.21.244.1"
   }
@@ -828,8 +998,8 @@ GET /api/documents/<doc_id>/access-log/         🔒 (Patient — specific doc)
 ```
 QuickCare/
 ├── QuickCare/          # Project config (settings, urls, wsgi)
-├── users/              # Custom User, OTP auth, JWT, addresses
-├── clinic/             # Clinic CRUD, member management
+├── users/              # Custom User, OTP auth, JWT, addresses, medical profile
+├── clinic/             # Clinic CRUD, member management, time slots
 ├── doctors/            # Doctor profiles, availability, leaves
 ├── appointments/       # Appointment booking
 ├── documents/          # Document upload, consent, audit log
@@ -843,17 +1013,12 @@ QuickCare/
 
 ## 🚦 Error Responses
 
-All errors follow this shape:
 ```json
-{
-  "message": "Human-readable error description."
-}
+{ "message": "Human-readable error description." }
 ```
-Or for field validation errors:
+Or for field validation:
 ```json
-{
-  "field_name": ["This field is required."]
-}
+{ "field_name": ["This field is required."] }
 ```
 
 | Code | Meaning |
@@ -862,19 +1027,29 @@ Or for field validation errors:
 | `401` | Missing or invalid token |
 | `403` | Authenticated but not authorised |
 | `404` | Resource not found |
-| `409` | Conflict (e.g. duplicate slot) |
+| `409` | Conflict (e.g. duplicate member, slot overlap) |
 
 ---
 
 ## 🔒 Permissions Summary
 
-| Endpoint Group | Who Can Access |
+| Endpoint | Who Can Access |
 |---|---|
-| OTP & Register | Anyone |
+| `POST /api/users/login/` | Anyone |
+| `POST /api/users/token/refresh/` | Anyone |
+| `POST /api/users/onboarding/patient/step1/` | Anyone |
+| `POST /api/users/onboarding/patient/step2/` | Anyone |
+| `PUT /api/users/onboarding/patient/step3/` | Authenticated (partial onboarding) |
+| `POST /api/users/onboarding/clinic/step1/` | Anyone |
+| `POST /api/users/onboarding/clinic/step2/` | Anyone |
+| `POST /api/clinics/onboarding/step3/` | Authenticated Clinic Owner |
 | `/api/users/me/` | Logged-in user |
+| `/api/users/me/medical-profile/` | Logged-in user |
 | `/api/clinics/public/` | Anyone |
+| `/api/clinics/<id>/slots/` (GET) | Anyone |
 | `/api/clinics/` (CRUD) | Clinic Owner |
 | `/api/clinics/<id>/members/` | Clinic Owner |
+| `/api/clinics/<id>/slots/` (POST/PUT/DELETE) | Clinic Owner |
 | `/api/clinics/my/memberships/` | Doctor / Lab Member |
 | `/api/doctors/` (list/detail) | Anyone |
 | `/api/doctors/me/` | Doctor |
@@ -891,8 +1066,13 @@ Or for field validation errors:
 
 ## 📝 Notes
 
-- **OTP** is printed to the server console in dev. Integrate an SMS/WhatsApp provider (e.g. Twilio, MSG91) before going to production.
-- **`MASTER_OTP`** in `.env` allows bypassing OTP in development. Remove or leave empty in production.
-- **Doctors cannot self-register** as doctors — they must be added to a clinic by a Clinic Owner via `POST /api/clinics/<id>/members/`.
-- **Document access** is always logged. Doctors can only download a file if they have an active (non-expired, non-revoked) consent record.
-- **SSL** is enforced on the PostgreSQL connection (`sslmode=require`).
+- **OTP** is only used during **registration** to verify the phone number. It is printed to the server console in dev — integrate an SMS/WhatsApp provider (e.g. Twilio, MSG91) before production.
+- **Login** uses contact + password verified directly against the database. No OTP required after registration.
+- **`MASTER_OTP`** in `.env` bypasses OTP in development. Leave empty in production.
+- **`USE_SQLITE=True`** in `.env` uses local SQLite. Set `USE_SQLITE=False` for PostgreSQL in production.
+- **Doctors cannot self-register** — they must be added to a clinic by a Clinic Owner via `POST /api/clinics/<id>/members/`.
+- **Document access** is always logged. Doctors can only access a file with an active (non-expired, non-revoked) consent record.
+- **Onboarding flags**: `is_partial_onboarding=True` after Step 1, `is_complete_onboarding=True` after Step 2. Frontend can use these to resume an interrupted signup.
+
+
+---

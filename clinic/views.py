@@ -6,10 +6,12 @@ from rest_framework.views import APIView
 
 from users.models import User
 from doctors.models import DoctorProfile
-from .models import Clinic, ClinicMember
+from .models import Clinic, ClinicMember, ClinicTimeSlot
 from .serializers import (
     ClinicSerializer, ClinicWriteSerializer,
     ClinicMemberSerializer, AddMemberSerializer, UpdateMemberSerializer,
+    ClinicTimeSlotSerializer, ClinicTimeSlotWriteSerializer,
+    ClinicOnboardingStep2Serializer,
 )
 from .permissions import IsClinicOwner
 
@@ -299,3 +301,133 @@ class PublicClinicListView(ListAPIView):
         if clinic_type:
             qs = qs.filter(clinic_type=clinic_type)
         return qs
+
+
+# ═══════════════════════════════════════════════════════════════
+# CLINIC OWNER ONBOARDING — Step 2
+# ═══════════════════════════════════════════════════════════════
+
+class ClinicOnboardingStep2(APIView):
+    """
+    CLINIC OWNER — Step 2 (requires JWT from user onboarding Step 1).
+
+    Creates the clinic and initial time slots in one request.
+    Sets the owner's is_complete_onboarding = True.
+
+    POST /api/clinics/onboarding/step2/
+    {
+        "name": "City Care Clinic",
+        "clinic_type": "clinic",
+        "phone": "9876543210",
+        "email": "citycare@example.com",
+        "address": "12, MG Road",
+        "city": "Jaipur",
+        "state": "Rajasthan",
+        "pincode": "302001",
+        "description": "Multi-specialty clinic",
+        "time_slots": [
+            {"day_of_week": 0, "start_time": "09:00", "end_time": "13:00", "slot_duration_minutes": 15},
+            {"day_of_week": 0, "start_time": "17:00", "end_time": "20:00", "slot_duration_minutes": 15},
+            {"day_of_week": 1, "start_time": "09:00", "end_time": "13:00", "slot_duration_minutes": 15}
+        ]
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = ClinicOnboardingStep2Serializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        slots_data = data.pop('time_slots', [])
+
+        # Create the clinic
+        clinic = Clinic.objects.create(owner=request.user, **data)
+
+        # Create time slots
+        created_slots = []
+        for slot in slots_data:
+            ts = ClinicTimeSlot.objects.create(clinic=clinic, **slot)
+            created_slots.append(ts)
+
+        # Mark owner as fully onboarded
+        user = request.user
+        user.is_partial_onboarding = False
+        user.is_complete_onboarding = True
+        user.save(update_fields=['is_partial_onboarding', 'is_complete_onboarding'])
+
+        return Response({
+            'message': 'Clinic registration complete! You can now add doctors from your dashboard.',
+            'clinic': ClinicSerializer(clinic).data,
+            'time_slots': ClinicTimeSlotSerializer(created_slots, many=True).data,
+        }, status=status.HTTP_201_CREATED)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Clinic Time Slots CRUD (post-onboarding management)
+# ═══════════════════════════════════════════════════════════════
+
+class ClinicTimeSlotListView(APIView):
+    """
+    GET  – list all time slots for a clinic (public)
+    POST – add a new time slot (owner only)
+    """
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [permissions.AllowAny()]
+        return [permissions.IsAuthenticated()]
+
+    def get(self, request, clinic_id):
+        try:
+            clinic = Clinic.objects.get(pk=clinic_id, is_active=True)
+        except Clinic.DoesNotExist:
+            return Response({'message': 'Clinic not found.'}, status=status.HTTP_404_NOT_FOUND)
+        slots = ClinicTimeSlot.objects.filter(clinic=clinic, is_active=True)
+        return Response(ClinicTimeSlotSerializer(slots, many=True).data)
+
+    def post(self, request, clinic_id):
+        clinic, err = _get_clinic_or_403(clinic_id, request.user)
+        if err:
+            return err
+        serializer = ClinicTimeSlotWriteSerializer(data=request.data)
+        if serializer.is_valid():
+            slot = serializer.save(clinic=clinic)
+            return Response(ClinicTimeSlotSerializer(slot).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ClinicTimeSlotDetailView(APIView):
+    """
+    PUT    – update a time slot (owner only)
+    DELETE – deactivate a time slot (owner only)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_slot(self, clinic_id, slot_id, user):
+        clinic, err = _get_clinic_or_403(clinic_id, user)
+        if err:
+            return None, err
+        try:
+            slot = ClinicTimeSlot.objects.get(pk=slot_id, clinic=clinic)
+        except ClinicTimeSlot.DoesNotExist:
+            return None, Response({'message': 'Time slot not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return slot, None
+
+    def put(self, request, clinic_id, slot_id):
+        slot, err = self._get_slot(clinic_id, slot_id, request.user)
+        if err:
+            return err
+        serializer = ClinicTimeSlotWriteSerializer(slot, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(ClinicTimeSlotSerializer(slot).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, clinic_id, slot_id):
+        slot, err = self._get_slot(clinic_id, slot_id, request.user)
+        if err:
+            return err
+        slot.is_active = False
+        slot.save(update_fields=['is_active'])
+        return Response({'message': 'Time slot deactivated.'}, status=status.HTTP_200_OK)

@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, UserAddress, Role
+from .models import User, UserAddress, Role, PatientMedicalProfile
 
 
 @admin.register(Role)
@@ -10,13 +10,14 @@ class RoleAdmin(admin.ModelAdmin):
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
-    list_display = ['contact', 'name', 'email', 'roles', 'is_active', 'date_joined']
-    list_filter = ['roles', 'is_active', 'gender']
+    list_display = ['contact', 'name', 'email', 'roles', 'is_active',
+                    'is_partial_onboarding', 'is_complete_onboarding', 'date_joined']
+    list_filter = ['roles', 'is_active', 'gender', 'is_complete_onboarding']
     search_fields = ['contact', 'name', 'email']
     ordering = ['-date_joined']
     fieldsets = (
         (None, {'fields': ('contact', 'password')}),
-        ('Personal Info', {'fields': ('name', 'email', 'age', 'gender', 'avatar')}),
+        ('Personal Info', {'fields': ('name', 'email', 'age', 'gender', 'blood_group', 'avatar')}),
         ('Roles & Status', {'fields': ('roles', 'is_active', 'is_staff', 'is_partial_onboarding', 'is_complete_onboarding')}),
         ('Permissions', {'fields': ('groups', 'user_permissions')}),
     )
@@ -27,6 +28,12 @@ class UserAdmin(BaseUserAdmin):
         }),
     )
 
+
+@admin.register(PatientMedicalProfile)
+class PatientMedicalProfileAdmin(admin.ModelAdmin):
+    list_display = ['user', 'height_cm', 'weight_kg', 'emergency_contact_name', 'updated_at']
+    search_fields = ['user__name', 'user__contact', 'chronic_conditions', 'allergies']
+    readonly_fields = ['created_at', 'updated_at']
 
 @admin.register(UserAddress)
 class UserAddressAdmin(admin.ModelAdmin):
