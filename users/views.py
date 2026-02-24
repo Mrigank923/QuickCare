@@ -5,13 +5,14 @@ from datetime import datetime, timedelta
 from django.contrib.auth import get_user_model, authenticate
 from django.core.cache import cache
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status, permissions, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from decouple import config
 
-from .models import User, UserAddress, Role, PatientMedicalProfile
+from .models import User, UserAddress, Role, PatientMedicalProfile, OTPLog
 from .serializers import (
     UserSerializer, UserCreateSerializer, UserAddressSerializer,
     PatientStep1Serializer, PatientStep2Serializer,
@@ -32,22 +33,34 @@ def generate_base32(contact):
     return base64.b32encode(b)
 
 
-def send_otp(contact):
-    """Generate and 'send' OTP. Returns the OTP (for console logging in dev)."""
+def send_otp(contact, purpose='patient_register'):
+    """Generate and 'send' OTP. Saves to OTPLog for superadmin visibility."""
     totp = pyotp.TOTP(generate_base32(contact), digits=6, interval=OTP_CACHE_TIMEOUT)
     otp = totp.now()
     # TODO: integrate SMS/WhatsApp (e.g. Twilio, MSG91) before production
     print(f"[OTP] Contact: {contact}  OTP: {otp}")
+    # Save to DB for superadmin visibility
+    OTPLog.objects.create(
+        contact=contact,
+        otp=otp,
+        purpose=purpose,
+        expires_at=timezone.now() + timedelta(seconds=OTP_CACHE_TIMEOUT),
+    )
     return otp
 
 
 def verify_otp(contact, otp):
-    """Returns True if OTP is valid for the given contact."""
+    """Returns True if OTP is valid for the given contact. Marks it as used in the log."""
     totp = pyotp.TOTP(generate_base32(contact), digits=6, interval=OTP_CACHE_TIMEOUT)
-    return (
+    is_valid = (
         totp.verify(otp, valid_window=3, for_time=datetime.now() - timedelta(minutes=1))
         or (MASTER_OTP and otp == MASTER_OTP)
     )
+    if is_valid:
+        # Mark the most recent unused OTP for this contact as used
+        OTPLog.objects.filter(contact=contact, is_used=False).order_by('-created_at').first() and \
+            OTPLog.objects.filter(contact=contact, is_used=False).order_by('-created_at').update(is_used=True)
+    return is_valid
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -134,7 +147,7 @@ class PatientRegisterStep1(APIView):
             'password': data['password'],
         }, timeout=OTP_CACHE_TIMEOUT)
 
-        send_otp(contact)
+        send_otp(contact, purpose='patient_register')
 
         return Response({
             'message': 'OTP sent to your contact number. Please verify to complete registration.',
@@ -305,7 +318,7 @@ class ClinicOwnerRegisterStep1(APIView):
             'password': data['password'],
         }, timeout=OTP_CACHE_TIMEOUT)
 
-        send_otp(contact)
+        send_otp(contact, purpose='clinic_register')
 
         return Response({
             'message': 'OTP sent to your contact number. Please verify to complete registration.',

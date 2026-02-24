@@ -180,3 +180,33 @@ class PatientMedicalProfile(models.Model):
 
     class Meta:
         db_table = "patient_medical_profile"
+
+
+# ─────────────────────────────────────────────────────────────
+# OTP Log — visible to superadmin in the admin panel
+# ─────────────────────────────────────────────────────────────
+
+class OTPLog(models.Model):
+    """
+    Stores every generated OTP for superadmin visibility.
+    Automatically deleted after 10 minutes via admin or a cleanup task.
+    """
+    contact = models.BigIntegerField()
+    otp = models.CharField(max_length=10)
+    purpose = models.CharField(
+        max_length=50,
+        choices=[('patient_register', 'Patient Register'), ('clinic_register', 'Clinic Register')],
+        default='patient_register'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"OTP {self.otp} → {self.contact} ({self.purpose})"
+
+    class Meta:
+        db_table = "otp_log"
+        ordering = ['-created_at']
+        verbose_name = "OTP Log"
+        verbose_name_plural = "OTP Logs"

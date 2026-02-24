@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, UserAddress, Role, PatientMedicalProfile
+from django.utils import timezone
+from .models import User, UserAddress, Role, PatientMedicalProfile, OTPLog
 
 
 @admin.register(Role)
@@ -40,3 +41,20 @@ class UserAddressAdmin(admin.ModelAdmin):
     list_display = ['user', 'address_type', 'town', 'state', 'pincode', 'is_current']
     list_filter = ['address_type', 'is_current']
     search_fields = ['user__contact', 'user__name', 'town', 'pincode']
+
+
+@admin.register(OTPLog)
+class OTPLogAdmin(admin.ModelAdmin):
+    list_display = ['contact', 'otp', 'purpose', 'is_used', 'is_expired', 'created_at', 'expires_at']
+    list_filter = ['purpose', 'is_used']
+    search_fields = ['contact']
+    readonly_fields = ['contact', 'otp', 'purpose', 'created_at', 'expires_at', 'is_used']
+    ordering = ['-created_at']
+
+    def is_expired(self, obj):
+        return timezone.now() > obj.expires_at
+    is_expired.boolean = True
+    is_expired.short_description = 'Expired?'
+
+    def has_add_permission(self, request):
+        return False  # OTPs are created by the system, not manually
