@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'django_filters',
+    'drf_spectacular',
     # Local apps
     'users',
     'clinic',
@@ -160,6 +161,31 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+# Swagger / OpenAPI (drf-spectacular)
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'QuickCare API',
+    'DESCRIPTION': (
+        'Backend API for QuickCare — a health management platform.\n\n'
+        '## Authentication\n'
+        'All protected endpoints require a Bearer JWT token in the `Authorization` header:\n'
+        '```\nAuthorization: Bearer <access_token>\n```\n'
+        'Obtain a token via **Login** or **Registration Step 2**.\n\n'
+        '## User Roles\n'
+        '| ID | Role |\n|---|---|\n'
+        '| 3 | Patient |\n| 7 | Clinic Owner |\n| 4 | Doctor |'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SECURITY': [{'BearerAuth': []}],
+    'SWAGGER_UI_SETTINGS': {
+        'persistAuthorization': True,
+        'displayRequestDuration': True,
+        'filter': True,
+    },
 }
 
 # JWT settings
