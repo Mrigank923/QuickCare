@@ -25,4 +25,13 @@ urlpatterns = [
 
     # ── Doctor / lab member: view own clinic memberships ─────
     path('my/memberships/', views.MyClinicMembershipsView.as_view(), name='my-clinic-memberships'),
+
+    # ── Admission document requirements ──────────────────────
+    # Anyone / public  : GET  /api/clinics/<id>/admission-docs/
+    # Patient-specific : GET  /api/clinics/<id>/admission-docs/patient/   🔒
+    # Clinic owner     : POST /api/clinics/<id>/admission-docs/           🔒
+    # Clinic owner     : PUT / DELETE /api/clinics/<id>/admission-docs/<doc_id>/  🔒
+    path('<uuid:clinic_id>/admission-docs/', views.ClinicAdmissionDocumentListView.as_view(), name='admission-doc-list'),
+    path('<uuid:clinic_id>/admission-docs/patient/', views.PatientAdmissionDocView.as_view(), name='admission-doc-patient'),
+    path('<uuid:clinic_id>/admission-docs/<uuid:doc_id>/', views.ClinicAdmissionDocumentDetailView.as_view(), name='admission-doc-detail'),
 ]

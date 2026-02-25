@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Clinic, ClinicMember, ClinicTimeSlot
+from .models import Clinic, ClinicMember, ClinicTimeSlot, ClinicAdmissionDocument
 
 
 @admin.register(Clinic)
@@ -37,3 +37,12 @@ class ClinicTimeSlotAdmin(admin.ModelAdmin):
     search_fields = ['clinic__name']
     list_editable = ['is_active']
     readonly_fields = ['id', 'created_at']
+
+
+@admin.register(ClinicAdmissionDocument)
+class ClinicAdmissionDocumentAdmin(admin.ModelAdmin):
+    list_display = ['clinic', 'document_name', 'document_type', 'is_mandatory', 'created_at']
+    list_filter = ['clinic', 'document_type', 'is_mandatory']
+    search_fields = ['clinic__name', 'document_name']
+    list_editable = ['is_mandatory']
+    readonly_fields = ['id', 'created_at', 'updated_at']

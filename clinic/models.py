@@ -179,3 +179,50 @@ class ClinicTimeSlot(models.Model):
     def __str__(self):
         day_name = dict(self.DAY_CHOICES).get(self.day_of_week, '')
         return f"{self.clinic.name} — {day_name} {self.start_time}–{self.end_time}"
+
+
+# ─────────────────────────────────────────────────────────────
+# Clinic Admission Document Requirements
+# ─────────────────────────────────────────────────────────────
+
+class ClinicAdmissionDocument(models.Model):
+    """
+    Checklist of documents a clinic requires from a patient at the time of admission.
+    Defined by the clinic owner. Publicly visible so patients can prepare in advance.
+    """
+    DOC_TYPE_CHOICES = (
+        ('id_proof',       'ID Proof (Aadhar, PAN, Passport)'),
+        ('insurance',      'Insurance / TPA Card'),
+        ('prescription',   'Prescription / Referral Letter'),
+        ('lab_report',     'Lab / Blood Report'),
+        ('imaging',        'Imaging / X-Ray / MRI / CT Scan'),
+        ('vaccination',    'Vaccination Record'),
+        ('discharge_summary', 'Previous Discharge Summary'),
+        ('other',          'Other'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(
+        Clinic, on_delete=models.CASCADE, related_name='admission_documents')
+    document_name = models.CharField(
+        max_length=200,
+        help_text="Human-readable name, e.g. 'Aadhar Card', 'CBC Blood Report'")
+    document_type = models.CharField(
+        max_length=50, choices=DOC_TYPE_CHOICES, default='other')
+    is_mandatory = models.BooleanField(
+        default=True,
+        help_text="True = patient must bring this; False = recommended but optional")
+    notes = models.TextField(
+        blank=True, null=True,
+        help_text="Additional instructions for the patient, e.g. 'original + 2 photocopies'")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'clinic_admission_document'
+        ordering = ['-is_mandatory', 'document_type', 'document_name']
+
+    def __str__(self):
+        mandatory = 'Mandatory' if self.is_mandatory else 'Optional'
+        return f"{self.clinic.name} — {self.document_name} [{mandatory}]"

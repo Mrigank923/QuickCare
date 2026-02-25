@@ -3,16 +3,18 @@ from rest_framework import status, permissions, filters
 from rest_framework.generics import ListAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 from users.models import User, Role
 from users.views import generate_temp_password, send_temp_password
 from doctors.models import DoctorProfile
-from .models import Clinic, ClinicMember, ClinicTimeSlot
+from .models import Clinic, ClinicMember, ClinicTimeSlot, ClinicAdmissionDocument
 from .serializers import (
     ClinicSerializer, ClinicWriteSerializer,
     ClinicMemberSerializer, AddMemberSerializer, UpdateMemberSerializer,
     ClinicTimeSlotSerializer, ClinicTimeSlotWriteSerializer,
     ClinicOnboardingStep2Serializer,
+    ClinicAdmissionDocumentSerializer, ClinicAdmissionDocumentWriteSerializer,
 )
 from .permissions import IsClinicOwner
 
@@ -42,11 +44,8 @@ def _get_clinic_or_403(clinic_id, user):
 # Clinic CRUD (Owner)
 # ─────────────────────────────────────────────
 
+@extend_schema(tags=['Clinics'], responses={200: ClinicSerializer})
 class ClinicListCreateView(APIView):
-    """
-    GET  – list all clinics owned by the current user
-    POST – create a new clinic (logged-in user becomes owner)
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -61,12 +60,8 @@ class ClinicListCreateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Clinics'], responses={200: ClinicSerializer})
 class ClinicDetailView(APIView):
-    """
-    GET    – public clinic profile
-    PUT    – owner updates clinic details
-    DELETE – owner deactivates clinic (soft delete)
-    """
     def get_permissions(self):
         if self.request.method == 'GET':
             return [permissions.AllowAny()]
@@ -102,6 +97,7 @@ class ClinicDetailView(APIView):
 # Member Management (Add / List / Update / Remove)
 # ─────────────────────────────────────────────
 
+@extend_schema(tags=['Clinic Members'], responses={200: ClinicMemberSerializer})
 class ClinicMemberListView(APIView):
     """
     GET  – list all members of the clinic (owner only)
@@ -257,6 +253,7 @@ class ClinicMemberListView(APIView):
         return Response(response_data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(tags=['Clinic Members'], responses={200: ClinicMemberSerializer})
 class ClinicMemberDetailView(APIView):
     """
     GET    – get a single member's details (owner only)
@@ -323,6 +320,7 @@ class ClinicMemberDetailView(APIView):
 # My Clinics (for a doctor / lab member)
 # ─────────────────────────────────────────────
 
+@extend_schema(tags=['Clinic Members'], responses={200: ClinicMemberSerializer})
 class MyClinicMembershipsView(APIView):
     """
     A doctor / lab member views all clinics they belong to.
@@ -365,6 +363,7 @@ class PublicClinicListView(ListAPIView):
 # CLINIC OWNER ONBOARDING — Step 2
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['Clinic Owner Registration'])
 class ClinicOnboardingStep2(APIView):
     """
     CLINIC OWNER — Step 2 (requires JWT from user onboarding Step 1).
@@ -426,6 +425,7 @@ class ClinicOnboardingStep2(APIView):
 # Clinic Time Slots CRUD (post-onboarding management)
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['Clinic Time Slots'], responses={200: ClinicTimeSlotSerializer})
 class ClinicTimeSlotListView(APIView):
     """
     GET  – list all time slots for a clinic (public)
@@ -455,6 +455,7 @@ class ClinicTimeSlotListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Clinic Time Slots'], responses={200: ClinicTimeSlotSerializer})
 class ClinicTimeSlotDetailView(APIView):
     """
     PUT    – update a time slot (owner only)
@@ -489,3 +490,138 @@ class ClinicTimeSlotDetailView(APIView):
         slot.is_active = False
         slot.save(update_fields=['is_active'])
         return Response({'message': 'Time slot deactivated.'}, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────
+# Clinic Admission Document Requirements
+# ─────────────────────────────────────────────
+
+@extend_schema(tags=['Clinic Admission Documents'], responses={200: ClinicAdmissionDocumentSerializer})
+class ClinicAdmissionDocumentListView(APIView):
+    """
+    GET  (public)         – list all required admission documents for a clinic
+    POST (clinic owner 🔒) – add a new required document to the checklist
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, clinic_id):
+        try:
+            clinic = Clinic.objects.get(pk=clinic_id, is_active=True)
+        except Clinic.DoesNotExist:
+            return Response({'message': 'Clinic not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        docs = ClinicAdmissionDocument.objects.filter(clinic=clinic)
+
+        # Optional filter: ?mandatory=true / ?mandatory=false
+        mandatory_param = request.query_params.get('mandatory')
+        if mandatory_param is not None:
+            docs = docs.filter(is_mandatory=mandatory_param.lower() == 'true')
+
+        return Response(ClinicAdmissionDocumentSerializer(docs, many=True).data)
+
+    def post(self, request, clinic_id):
+        # Only the clinic owner can add documents
+        if not request.user.is_authenticated:
+            return Response({'message': 'Authentication required.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        clinic, err = _get_clinic_or_403(clinic_id, request.user)
+        if err:
+            return err
+
+        serializer = ClinicAdmissionDocumentWriteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        doc = serializer.save(clinic=clinic)
+        return Response(ClinicAdmissionDocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(tags=['Clinic Admission Documents'], responses={200: ClinicAdmissionDocumentSerializer})
+class ClinicAdmissionDocumentDetailView(APIView):
+    """
+    PUT    (clinic owner 🔒) – update a required document entry
+    DELETE (clinic owner 🔒) – remove a required document entry
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_doc(self, clinic_id, doc_id, user):
+        clinic, err = _get_clinic_or_403(clinic_id, user)
+        if err:
+            return None, err
+        try:
+            doc = ClinicAdmissionDocument.objects.get(pk=doc_id, clinic=clinic)
+        except ClinicAdmissionDocument.DoesNotExist:
+            return None, Response({'message': 'Document requirement not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return doc, None
+
+    def put(self, request, clinic_id, doc_id):
+        doc, err = self._get_doc(clinic_id, doc_id, request.user)
+        if err:
+            return err
+        serializer = ClinicAdmissionDocumentWriteSerializer(doc, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(ClinicAdmissionDocumentSerializer(doc).data)
+
+    def delete(self, request, clinic_id, doc_id):
+        doc, err = self._get_doc(clinic_id, doc_id, request.user)
+        if err:
+            return err
+        doc.delete()
+        return Response({'message': 'Document requirement removed.'}, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=['Clinic Admission Documents'], responses={200: ClinicAdmissionDocumentSerializer})
+class PatientAdmissionDocView(APIView):
+    """
+    GET /api/clinics/<clinic_id>/admission-docs/patient/   🔒  (Patient)
+
+    Returns the admission document checklist for a clinic the patient
+    has an active/upcoming appointment at.
+    Prevents patients from querying clinics they have no relationship with.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, clinic_id):
+        from appointments.models import Appointment
+
+        user = request.user
+
+        # Verify the clinic exists
+        try:
+            clinic = Clinic.objects.get(pk=clinic_id, is_active=True)
+        except Clinic.DoesNotExist:
+            return Response({'message': 'Clinic not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Check the patient has at least one non-cancelled appointment
+        # with a doctor who belongs to this clinic
+        has_appointment = Appointment.objects.filter(
+            patient=user,
+            doctor__user__clinic_memberships__clinic=clinic,
+            doctor__user__clinic_memberships__status='active',
+        ).exclude(status__in=['cancelled', 'no_show']).exists()
+
+        if not has_appointment:
+            return Response(
+                {'message': 'You do not have any active appointments at this clinic.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        docs = ClinicAdmissionDocument.objects.filter(clinic=clinic)
+
+        mandatory = docs.filter(is_mandatory=True)
+        optional = docs.filter(is_mandatory=False)
+
+        return Response({
+            'clinic': {
+                'id': str(clinic.id),
+                'name': clinic.name,
+                'address': clinic.address,
+                'city': clinic.city,
+                'phone': clinic.phone,
+            },
+            'mandatory_documents': ClinicAdmissionDocumentSerializer(mandatory, many=True).data,
+            'optional_documents': ClinicAdmissionDocumentSerializer(optional, many=True).data,
+            'total_required': mandatory.count(),
+        })

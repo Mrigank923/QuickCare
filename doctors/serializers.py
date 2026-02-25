@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 from users.serializers import UserSerializer
 from .models import DoctorProfile, DoctorAvailability, DoctorLeave
 
@@ -36,6 +37,7 @@ class DoctorProfileSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['user', 'is_verified', 'created_at', 'updated_at']
 
+    @extend_schema_field(DoctorClinicInfoSerializer(many=True))
     def get_clinics(self, obj):
         """Return a summary of all active clinics this doctor belongs to."""
         from clinic.models import ClinicMember

@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema_field
 from users.serializers import UserSerializer
-from .models import Clinic, ClinicMember, ClinicTimeSlot
+from .models import Clinic, ClinicMember, ClinicTimeSlot, ClinicAdmissionDocument
 
 
 class ClinicSerializer(serializers.ModelSerializer):
@@ -18,6 +19,7 @@ class ClinicSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'slug', 'owner', 'created_at']
 
+    @extend_schema_field(serializers.IntegerField())
     def get_member_count(self, obj):
         return obj.members.filter(status='active').count()
 
@@ -132,3 +134,29 @@ class ClinicOnboardingStep2Serializer(serializers.Serializer):
 
     # Time slots (list of slot objects)
     time_slots = ClinicTimeSlotWriteSerializer(many=True, required=False)
+
+
+# ─────────────────────────────────────────────────────────────
+# Clinic Admission Document Serializers
+# ─────────────────────────────────────────────────────────────
+
+class ClinicAdmissionDocumentSerializer(serializers.ModelSerializer):
+    """Read serializer — returned to any caller (patient, public)."""
+    document_type_display = serializers.CharField(
+        source='get_document_type_display', read_only=True)
+
+    class Meta:
+        model = ClinicAdmissionDocument
+        fields = [
+            'id', 'document_name', 'document_type', 'document_type_display',
+            'is_mandatory', 'notes', 'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class ClinicAdmissionDocumentWriteSerializer(serializers.ModelSerializer):
+    """Write serializer — used by clinic owner to create / update entries."""
+
+    class Meta:
+        model = ClinicAdmissionDocument
+        fields = ['document_name', 'document_type', 'is_mandatory', 'notes']

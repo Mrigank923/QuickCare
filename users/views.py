@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from decouple import config
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 from .models import UserAddress, Role, PatientMedicalProfile, OTPLog, TempPasswordLog
 from .serializers import (
@@ -87,6 +88,7 @@ def send_temp_password(contact, password, added_by=None):
 # LOGIN — contact + password (no OTP needed)
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['Auth'], request=PatientStep1Serializer, responses={200: OpenApiResponse(description='OTP sent')})
 class LoginView(APIView):
     """
     Standard login with contact number + password.
@@ -161,6 +163,7 @@ class LoginView(APIView):
 # PATIENT ONBOARDING — 3-step registration
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['Patient Registration'], request=PatientStep1Serializer, responses={200: OpenApiResponse(description='OTP sent')})
 class PatientRegisterStep1(APIView):
     """
     PATIENT — Step 1.
@@ -202,6 +205,7 @@ class PatientRegisterStep1(APIView):
         }, status=status.HTTP_200_OK)
 
 
+@extend_schema(tags=['Patient Registration'], responses={201: UserSerializer})
 class PatientRegisterStep2(APIView):
     """
     PATIENT — Step 2.
@@ -267,6 +271,7 @@ class PatientRegisterStep2(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(tags=['Patient Registration'], request=PatientStep2Serializer, responses={200: UserSerializer})
 class PatientRegisterStep3(APIView):
     """
     PATIENT — Step 3 (requires JWT from Step 2).
@@ -334,6 +339,7 @@ class PatientRegisterStep3(APIView):
 # CLINIC OWNER ONBOARDING — 3-step registration
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['Clinic Owner Registration'], request=ClinicOwnerStep1Serializer, responses={200: OpenApiResponse(description='OTP sent')})
 class ClinicOwnerRegisterStep1(APIView):
     """
     CLINIC OWNER — Step 1.
@@ -373,6 +379,7 @@ class ClinicOwnerRegisterStep1(APIView):
         }, status=status.HTTP_200_OK)
 
 
+@extend_schema(tags=['Clinic Owner Registration'], responses={201: UserSerializer})
 class ClinicOwnerRegisterStep2(APIView):
     """
     CLINIC OWNER — Step 2.
@@ -439,8 +446,8 @@ class ClinicOwnerRegisterStep2(APIView):
 # General User Endpoints
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['User'], responses={200: UserSerializer})
 class CurrentUser(APIView):
-    """Get / update the currently authenticated user's profile."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -454,6 +461,7 @@ class CurrentUser(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['User'], parameters=[OpenApiParameter('contact', str, OpenApiParameter.QUERY)])
 class CheckUserByContact(APIView):
     """Check whether a contact number is already registered."""
     permission_classes = [permissions.AllowAny]
@@ -466,6 +474,7 @@ class CheckUserByContact(APIView):
         return Response({'exists': exists}, status=status.HTTP_200_OK)
 
 
+@extend_schema(tags=['User'])
 class ChangePassword(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -478,6 +487,7 @@ class ChangePassword(APIView):
         return Response({'message': 'Password changed successfully.'}, status=status.HTTP_200_OK)
 
 
+@extend_schema(tags=['Auth'])
 class RefreshTokenView(APIView):
     """Refresh access token using refresh token."""
     permission_classes = [permissions.AllowAny]
@@ -499,6 +509,7 @@ class RefreshTokenView(APIView):
 # User Address
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['User'], responses={200: UserAddressSerializer})
 class UserAddressList(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -514,6 +525,7 @@ class UserAddressList(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['User'], responses={200: UserAddressSerializer})
 class UserAddressDetail(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -553,6 +565,7 @@ class UserAddressDetail(APIView):
 # Patient Medical Profile
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['User'], responses={200: PatientMedicalProfileSerializer})
 class PatientMedicalProfileView(APIView):
     """GET / PUT the logged-in patient's medical profile."""
     permission_classes = [permissions.IsAuthenticated]
@@ -576,6 +589,7 @@ class PatientMedicalProfileView(APIView):
 # MEMBER (Doctor / Lab Member / Receptionist) ONBOARDING
 # ═══════════════════════════════════════════════════════════════
 
+@extend_schema(tags=['Clinic Staff Onboarding'], request=MemberOnboardingSerializer, responses={200: UserSerializer})
 class MemberOnboardingView(APIView):
     """
     PUT /api/users/onboarding/member/complete/   🔒

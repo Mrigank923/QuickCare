@@ -2,6 +2,7 @@ from django.utils import timezone
 from rest_framework import status, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from drf_spectacular.utils import extend_schema
 
 from .models import Document, DocumentConsent, DocumentAccessLog
 from .serializers import (
@@ -21,6 +22,7 @@ def _get_client_ip(request):
 # Documents: Upload & List
 # ─────────────────────────────────────────────
 
+@extend_schema(tags=['Documents'], responses={200: DocumentSerializer})
 class DocumentListView(APIView):
     """
     GET  – patient: own documents | doctor: documents they have consent to
@@ -84,6 +86,7 @@ class DocumentListView(APIView):
         return Response(DocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(tags=['Documents'], responses={200: DocumentSerializer})
 class DocumentDetailView(APIView):
     """
     GET    – download/view a document (owner or consented doctor)
@@ -161,6 +164,7 @@ class DocumentDetailView(APIView):
 # Consent Management
 # ─────────────────────────────────────────────
 
+@extend_schema(tags=['Document Consent'], responses={200: DocumentConsentSerializer})
 class ConsentRequestView(APIView):
     """
     Doctor requests access to a patient's document.
@@ -204,6 +208,7 @@ class ConsentRequestView(APIView):
         return Response(DocumentConsentSerializer(consent).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(tags=['Document Consent'], responses={200: DocumentConsentSerializer})
 class PatientConsentListView(APIView):
     """
     Patient: view all consent requests made for their documents.
@@ -220,6 +225,7 @@ class PatientConsentListView(APIView):
         return Response(DocumentConsentSerializer(consents, many=True).data)
 
 
+@extend_schema(tags=['Document Consent'], responses={200: DocumentConsentSerializer})
 class PatientConsentActionView(APIView):
     """
     Patient: grant, reject, or revoke a consent request.
@@ -261,6 +267,7 @@ class PatientConsentActionView(APIView):
         return Response(DocumentConsentSerializer(consent).data)
 
 
+@extend_schema(tags=['Document Consent'], responses={200: DocumentConsentSerializer})
 class DoctorConsentListView(APIView):
     """
     Doctor: view all consent requests they have made.
@@ -277,6 +284,7 @@ class DoctorConsentListView(APIView):
         return Response(DocumentConsentSerializer(consents, many=True).data)
 
 
+@extend_schema(tags=['Documents'], responses={200: DocumentAccessLogSerializer})
 class DocumentAccessLogView(APIView):
     """
     Patient: view the full audit trail of who accessed their documents.
