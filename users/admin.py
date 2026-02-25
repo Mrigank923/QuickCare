@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils import timezone
-from .models import User, UserAddress, Role, PatientMedicalProfile, OTPLog
+from .models import User, UserAddress, Role, PatientMedicalProfile, OTPLog, TempPasswordLog
 
 
 @admin.register(Role)
@@ -58,3 +58,15 @@ class OTPLogAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False  # OTPs are created by the system, not manually
+
+
+@admin.register(TempPasswordLog)
+class TempPasswordLogAdmin(admin.ModelAdmin):
+    list_display = ['contact', 'temp_password', 'added_by', 'is_used', 'created_at']
+    list_filter = ['is_used']
+    search_fields = ['contact', 'added_by__name', 'added_by__contact']
+    readonly_fields = ['contact', 'temp_password', 'added_by', 'created_at']
+    ordering = ['-created_at']
+
+    def has_add_permission(self, request):
+        return False  # Created automatically by the system

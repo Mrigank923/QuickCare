@@ -1,5 +1,7 @@
 import pyotp
 import base64
+import random
+import string
 from datetime import datetime, timedelta
 
 from django.contrib.auth import get_user_model, authenticate
@@ -12,11 +14,12 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from decouple import config
 
-from .models import User, UserAddress, Role, PatientMedicalProfile, OTPLog
+from .models import UserAddress, Role, PatientMedicalProfile, OTPLog, TempPasswordLog
 from .serializers import (
     UserSerializer, UserCreateSerializer, UserAddressSerializer,
     PatientStep1Serializer, PatientStep2Serializer,
     PatientMedicalProfileSerializer, ClinicOwnerStep1Serializer,
+    MemberOnboardingSerializer,
 )
 
 User = get_user_model()
@@ -63,6 +66,23 @@ def verify_otp(contact, otp):
     return is_valid
 
 
+def generate_temp_password():
+    """Generate a random 8-character alphanumeric password."""
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choices(chars, k=8))
+
+
+def send_temp_password(contact, password, added_by=None):
+    """'Send' temp password to the member's contact. Saves to DB for admin visibility."""
+    # TODO: integrate SMS/WhatsApp before production
+    print(f"[TEMP PASSWORD] Contact: {contact}  Password: {password}")
+    TempPasswordLog.objects.create(
+        contact=contact,
+        temp_password=password,
+        added_by=added_by,
+    )
+
+
 # ═══════════════════════════════════════════════════════════════
 # LOGIN — contact + password (no OTP needed)
 # ═══════════════════════════════════════════════════════════════
@@ -101,6 +121,32 @@ class LoginView(APIView):
             return Response(
                 {'message': 'Your account has been deactivated.'},
                 status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Clinic staff added by clinic owner must complete their profile first.
+        # We still issue tokens so they can call the onboarding endpoint,
+        # but we signal clearly that onboarding is required.
+        # Roles: doctor(4), receptionist(5), lab_member(6).
+        CLINIC_STAFF_ROLES = (Role.IS_DOCTOR, Role.IS_RECEPTIONIST, Role.IS_LAB_MEMBER)
+        if (
+            user.roles_id in CLINIC_STAFF_ROLES
+            and user.is_partial_onboarding
+            and not user.is_complete_onboarding
+        ):
+            refresh = RefreshToken.for_user(user)
+            return Response(
+                {
+                    'message': (
+                        'Login successful, but your profile is incomplete. '
+                        'Please complete your onboarding to access all features.'
+                    ),
+                    'onboarding_required': True,
+                    'onboarding_url': '/api/users/onboarding/member/complete/',
+                    'access': str(refresh.access_token),
+                    'refresh': str(refresh),
+                    'user': UserSerializer(user).data,
+                },
+                status=status.HTTP_200_OK
             )
 
         refresh = RefreshToken.for_user(user)
@@ -524,3 +570,95 @@ class PatientMedicalProfileView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ═══════════════════════════════════════════════════════════════
+# MEMBER (Doctor / Lab Member / Receptionist) ONBOARDING
+# ═══════════════════════════════════════════════════════════════
+
+class MemberOnboardingView(APIView):
+    """
+    PUT /api/users/onboarding/member/complete/   🔒
+
+    Used by a doctor, lab member, or receptionist who was added to a clinic
+    by the clinic owner. They log in with the auto-generated temp password,
+    then call this endpoint to fill in their profile and complete onboarding.
+
+    Sets is_complete_onboarding = True.
+    All fields are optional — they can be updated later from /api/users/me/.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request):
+        user = request.user
+
+        # Only partial-onboarded clinic staff should call this
+        if user.is_complete_onboarding:
+            return Response(
+                {'message': 'Onboarding is already complete.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = MemberOnboardingSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+
+        # 1. Update basic user fields
+        if data.get('name'):
+            user.name = data['name']
+        if data.get('gender'):
+            user.gender = data['gender']
+        if data.get('age'):
+            user.age = data['age']
+        if data.get('email'):
+            user.email = data['email']
+        if data.get('blood_group'):
+            user.blood_group = data['blood_group']
+
+        user.is_partial_onboarding = False
+        user.is_complete_onboarding = True
+        user.save()
+
+        # 2. Create/update address if provided
+        address_fields = ['address_area', 'house_no', 'town', 'state', 'pincode']
+        if any(data.get(f) for f in address_fields):
+            UserAddress.objects.update_or_create(
+                user=user,
+                address_type='work',
+                defaults={
+                    'area': data.get('address_area', ''),
+                    'house_no': data.get('house_no', ''),
+                    'town': data.get('town', ''),
+                    'state': data.get('state', ''),
+                    'pincode': data.get('pincode', ''),
+                    'is_current': True,
+                }
+            )
+
+        # 3. Update doctor profile if user is a doctor and professional fields provided
+        if user.roles_id == Role.IS_DOCTOR:
+            from doctors.models import DoctorProfile
+            profile, _ = DoctorProfile.objects.get_or_create(user=user)
+            if data.get('specialty'):
+                profile.specialty = data['specialty']
+            if data.get('qualification'):
+                profile.qualification = data['qualification']
+            if data.get('experience_years') is not None:
+                profile.experience_years = data['experience_years']
+            profile.save()
+
+        # 4. Mark temp password as used in the admin log
+        TempPasswordLog.objects.filter(
+            contact=user.contact, is_used=False
+        ).update(is_used=True)
+
+        # 5. Issue tokens so the member doesn't need to log in again
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'message': 'Onboarding complete! Welcome to QuickCare.',
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data,
+        }, status=status.HTTP_200_OK)

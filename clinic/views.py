@@ -4,7 +4,8 @@ from rest_framework.generics import ListAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from users.models import User
+from users.models import User, Role
+from users.views import generate_temp_password, send_temp_password
 from doctors.models import DoctorProfile
 from .models import Clinic, ClinicMember, ClinicTimeSlot
 from .serializers import (
@@ -126,8 +127,12 @@ class ClinicMemberListView(APIView):
 
     def post(self, request, clinic_id):
         """
-        Add a member by their registered phone contact.
-        The user must already exist in the system.
+        Add a member by their contact number.
+        - If the user does NOT exist → auto-create account with 8-digit temp password,
+          send password to their contact, set is_partial_onboarding=True.
+        - If the user already exists → add to clinic directly (status=active).
+        - Doctors are enforced to belong to only ONE clinic at a time.
+        - Auto-creates DoctorProfile for doctors.
         """
         clinic, err = _get_clinic_or_403(clinic_id, request.user)
         if err:
@@ -141,15 +146,61 @@ class ClinicMemberListView(APIView):
         contact = data['contact']
         member_role = data['member_role']
 
-        # Look up the user by contact
-        try:
-            user = User.objects.get(contact=contact)
-        except User.DoesNotExist:
-            return Response(
-                {'message': f'No user found with contact {contact}. '
-                            f'Ask them to register first.'},
-                status=status.HTTP_404_NOT_FOUND
+        # Map member_role → system Role
+        role_map = {
+            'doctor': Role.IS_DOCTOR,
+            'lab_member': Role.IS_LAB_MEMBER,
+            'receptionist': Role.IS_RECEPTIONIST,
+        }
+        system_role_id = role_map[member_role]
+
+        # ── Enforce: a doctor can only belong to one clinic ──────────
+        if member_role == 'doctor':
+            existing_user = User.objects.filter(contact=contact).first()
+            if existing_user:
+                active_elsewhere = ClinicMember.objects.filter(
+                    user=existing_user,
+                    member_role='doctor',
+                    status='active',
+                ).exclude(clinic=clinic).first()
+                if active_elsewhere:
+                    return Response(
+                        {
+                            'message': (
+                                f'This doctor is already an active member of '
+                                f'"{active_elsewhere.clinic.name}". '
+                                f'A doctor can only belong to one clinic at a time.'
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT
+                    )
+
+        # ── Get or auto-create the user ───────────────────────────────
+        user = User.objects.filter(contact=contact).first()
+        is_new_user = False
+
+        if not user:
+            # Auto-create with temp password
+            temp_password = generate_temp_password()
+            role_obj = Role.objects.get(id=system_role_id)
+            user = User.objects.create_user(
+                contact=contact,
+                password=temp_password,
+                name=data.get('name', ''),
+                roles=role_obj,
+                is_partial_onboarding=True,
+                is_complete_onboarding=False,
             )
+            send_temp_password(contact, temp_password, added_by=request.user)
+            is_new_user = True
+        else:
+            # Existing user — update their role if they were previously a patient
+            if user.roles_id not in (Role.IS_DOCTOR, Role.IS_LAB_MEMBER, Role.IS_RECEPTIONIST):
+                role_obj = Role.objects.get(id=system_role_id)
+                user.roles = role_obj
+                user.is_partial_onboarding = True
+                user.is_complete_onboarding = False
+                user.save(update_fields=['roles', 'is_partial_onboarding', 'is_complete_onboarding'])
 
         # Prevent adding the clinic owner as a member
         if user == request.user:
@@ -158,15 +209,15 @@ class ClinicMemberListView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Check for existing (even inactive) membership
+        # ── Check for existing (even inactive) membership ─────────────
         existing = ClinicMember.objects.filter(clinic=clinic, user=user).first()
         if existing:
             if existing.status == 'active':
                 return Response(
-                    {'message': f'{user.name} is already an active member of this clinic.'},
+                    {'message': f'{user.name or contact} is already an active member of this clinic.'},
                     status=status.HTTP_409_CONFLICT
                 )
-            # Re-activate a previously removed member
+            # Re-activate previously removed member
             existing.status = 'active'
             existing.member_role = member_role
             existing.department = data.get('department', existing.department)
@@ -175,12 +226,11 @@ class ClinicMemberListView(APIView):
             existing.added_by = request.user
             existing.left_at = None
             existing.save()
-            return Response(
-                ClinicMemberSerializer(existing).data,
-                status=status.HTTP_200_OK
-            )
+            if member_role == 'doctor':
+                DoctorProfile.objects.get_or_create(user=user)
+            return Response(ClinicMemberSerializer(existing).data, status=status.HTTP_200_OK)
 
-        # Create new membership
+        # ── Create new membership ─────────────────────────────────────
         member = ClinicMember.objects.create(
             clinic=clinic,
             user=user,
@@ -192,11 +242,19 @@ class ClinicMemberListView(APIView):
             added_by=request.user,
         )
 
-        # If adding a doctor, auto-create DoctorProfile if it doesn't exist
+        # Auto-create DoctorProfile for doctors
         if member_role == 'doctor':
             DoctorProfile.objects.get_or_create(user=user)
 
-        return Response(ClinicMemberSerializer(member).data, status=status.HTTP_201_CREATED)
+        response_data = ClinicMemberSerializer(member).data
+        if is_new_user:
+            response_data['_info'] = (
+                f'New account created. A temporary password has been sent to {contact}. '
+                f'They must log in and complete their profile at '
+                f'/api/users/onboarding/member/complete/'
+            )
+
+        return Response(response_data, status=status.HTTP_201_CREATED)
 
 
 class ClinicMemberDetailView(APIView):

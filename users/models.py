@@ -210,3 +210,37 @@ class OTPLog(models.Model):
         ordering = ['-created_at']
         verbose_name = "OTP Log"
         verbose_name_plural = "OTP Logs"
+
+
+# ─────────────────────────────────────────────────────────────
+# Temp Password Log — visible to superadmin in the admin panel
+# ─────────────────────────────────────────────────────────────
+
+class TempPasswordLog(models.Model):
+    """
+    Stores the temporary password generated when a clinic owner adds a
+    doctor / receptionist / lab member who is not yet registered.
+    Visible to superadmin only. Should be cleared after the member
+    completes onboarding.
+    """
+    contact = models.BigIntegerField()
+    temp_password = models.CharField(max_length=20)
+    added_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='temp_passwords_issued',
+        help_text="Clinic owner who triggered the auto-registration",
+    )
+    is_used = models.BooleanField(
+        default=False,
+        help_text="Set to True once the member completes onboarding",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"TempPwd → {self.contact}  ({'used' if self.is_used else 'pending'})"
+
+    class Meta:
+        db_table = "temp_password_log"
+        ordering = ['-created_at']
+        verbose_name = "Temp Password Log"
+        verbose_name_plural = "Temp Password Logs"

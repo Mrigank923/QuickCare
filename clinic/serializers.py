@@ -49,10 +49,18 @@ class ClinicMemberSerializer(serializers.ModelSerializer):
 class AddMemberSerializer(serializers.Serializer):
     """
     Used by clinic owner to add a doctor/lab member/receptionist.
-    The user must already be registered in the system.
+    - If the user is NOT yet registered, provide `name` so an account can be auto-created
+      with a temporary password that is sent to their contact number.
+    - If the user IS already registered, `name` is ignored.
     """
     contact = serializers.IntegerField(
-        help_text="Phone number of the user to add")
+        help_text="Phone number of the member to add")
+    name = serializers.CharField(
+        max_length=100,
+        required=False,
+        allow_blank=True,
+        help_text="Full name — required only if the person is not yet registered in the system",
+    )
     member_role = serializers.ChoiceField(
         choices=ClinicMember.MEMBER_ROLE_CHOICES)
     department = serializers.CharField(required=False, allow_blank=True)
