@@ -22,9 +22,9 @@ from appointments.models import Appointment
 # ─────────────────────────────────────────────
 
 class DoctorFilter(df_filters.FilterSet):
-    city = df_filters.CharFilter(field_name='clinic_members__clinic__city', lookup_expr='icontains')
+    city = df_filters.CharFilter(field_name='user__clinic_memberships__clinic__city', lookup_expr='icontains')
     specialty = df_filters.CharFilter(field_name='specialty', lookup_expr='icontains')
-    clinic = df_filters.UUIDFilter(field_name='clinic_members__clinic__id')
+    clinic = df_filters.UUIDFilter(field_name='user__clinic_memberships__clinic__id')
     min_fee = df_filters.NumberFilter(field_name='first_visit_fee', lookup_expr='gte')
     max_fee = df_filters.NumberFilter(field_name='first_visit_fee', lookup_expr='lte')
     video = df_filters.BooleanFilter(field_name='offers_video_consultation')
