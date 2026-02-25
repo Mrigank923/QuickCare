@@ -392,6 +392,25 @@ class ClinicOnboardingStep2(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+        user = request.user
+
+        # Guard: only clinic owners who completed user-onboarding Step 1+2 may proceed
+        if user.roles_id != Role.IS_CLINIC_OWNER:
+            return Response(
+                {'message': 'Only clinic owners can register a clinic.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        if not user.is_partial_onboarding:
+            return Response(
+                {'message': 'Complete clinic owner registration (steps 1 & 2) before creating a clinic.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if user.is_complete_onboarding:
+            return Response(
+                {'message': 'Clinic onboarding is already complete.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         serializer = ClinicOnboardingStep2Serializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

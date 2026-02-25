@@ -32,7 +32,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             'roles', 'contact', 'avatar', 'password',
             'is_partial_onboarding', 'is_complete_onboarding',
         ]
-        read_only_fields = ['id']
+        read_only_fields = ['id', 'is_partial_onboarding', 'is_complete_onboarding']
 
     def create(self, validated_data):
         password = validated_data.pop('password', None)
@@ -119,11 +119,12 @@ class PatientMedicalProfileSerializer(serializers.ModelSerializer):
         exclude = ['user']
 
 
+class LoginSerializer(serializers.Serializer):
+    contact = serializers.IntegerField()
+    password = serializers.CharField(write_only=True)
+
+
 class ClinicOwnerStep1Serializer(serializers.Serializer):
-    """
-    Clinic Owner Step 1: contact, name, password.
-    Creates User with role=IS_CLINIC_OWNER and is_partial_onboarding=True.
-    """
     contact = serializers.IntegerField()
     name = serializers.CharField(max_length=100)
     password = serializers.CharField(write_only=True, min_length=6)

@@ -20,7 +20,7 @@ from .serializers import (
     UserSerializer, UserCreateSerializer, UserAddressSerializer,
     PatientStep1Serializer, PatientStep2Serializer,
     PatientMedicalProfileSerializer, ClinicOwnerStep1Serializer,
-    MemberOnboardingSerializer,
+    MemberOnboardingSerializer, LoginSerializer,
 )
 
 User = get_user_model()
@@ -88,7 +88,7 @@ def send_temp_password(contact, password, added_by=None):
 # LOGIN — contact + password (no OTP needed)
 # ═══════════════════════════════════════════════════════════════
 
-@extend_schema(tags=['Auth'], request=PatientStep1Serializer, responses={200: OpenApiResponse(description='OTP sent')})
+@extend_schema(tags=['Auth'], request=LoginSerializer, responses={200: UserSerializer})
 class LoginView(APIView):
     """
     Standard login with contact number + password.
@@ -271,7 +271,7 @@ class PatientRegisterStep2(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
-@extend_schema(tags=['Patient Registration'], request=PatientStep2Serializer, responses={200: UserSerializer})
+@extend_schema(tags=['Patient Registration'], request=PatientStep2Serializer, responses={200: UserSerializer}, methods=['PATCH'])
 class PatientRegisterStep3(APIView):
     """
     PATIENT — Step 3 (requires JWT from Step 2).
@@ -279,17 +279,34 @@ class PatientRegisterStep3(APIView):
     Saves basic details (gender, age, email, blood_group, address)
     and medical details. Sets is_complete_onboarding = True.
 
-    PUT /api/users/onboarding/patient/step3/
+    PATCH /api/users/onboarding/patient/step3/
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    def put(self, request):
+    def patch(self, request):
         serializer = PatientStep2Serializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
         user = request.user
+
+        # Guard: only patients who came through Step 2 may complete Step 3
+        if user.roles_id != Role.IS_PATIENT:
+            return Response(
+                {'message': 'This endpoint is for patient onboarding only.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        if not user.is_partial_onboarding:
+            return Response(
+                {'message': 'Complete Step 1 & 2 before proceeding to Step 3.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if user.is_complete_onboarding:
+            return Response(
+                {'message': 'Onboarding is already complete.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # 1. Update basic user fields
         user.gender = data.get('gender', user.gender)
@@ -589,10 +606,10 @@ class PatientMedicalProfileView(APIView):
 # MEMBER (Doctor / Lab Member / Receptionist) ONBOARDING
 # ═══════════════════════════════════════════════════════════════
 
-@extend_schema(tags=['Clinic Staff Onboarding'], request=MemberOnboardingSerializer, responses={200: UserSerializer})
+@extend_schema(tags=['Clinic Staff Onboarding'], request=MemberOnboardingSerializer, responses={200: UserSerializer}, methods=['PATCH'])
 class MemberOnboardingView(APIView):
     """
-    PUT /api/users/onboarding/member/complete/   🔒
+    PATCH /api/users/onboarding/member/complete/   🔒
 
     Used by a doctor, lab member, or receptionist who was added to a clinic
     by the clinic owner. They log in with the auto-generated temp password,
@@ -603,10 +620,23 @@ class MemberOnboardingView(APIView):
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    def put(self, request):
+    def patch(self, request):
         user = request.user
 
-        # Only partial-onboarded clinic staff should call this
+        # Only clinic staff (doctor / receptionist / lab) should call this
+        CLINIC_STAFF_ROLES = (Role.IS_DOCTOR, Role.IS_RECEPTIONIST, Role.IS_LAB_MEMBER)
+        if user.roles_id not in CLINIC_STAFF_ROLES:
+            return Response(
+                {'message': 'This endpoint is only for clinic staff onboarding.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if not user.is_partial_onboarding:
+            return Response(
+                {'message': 'You must be added to a clinic before completing onboarding.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         if user.is_complete_onboarding:
             return Response(
                 {'message': 'Onboarding is already complete.'},
