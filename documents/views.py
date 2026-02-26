@@ -32,10 +32,11 @@ class DocumentListView(APIView):
 
     def get(self, request):
         user = request.user
+        from users.models import Role
         role_id = user.roles_id
 
-        if role_id == 4:  # Doctor
-            # Return docs where this doctor has an active granted consent
+        if role_id == Role.IS_DOCTOR:
+            # Doctor sees docs where they have an active granted consent
             from doctors.models import DoctorProfile
             try:
                 doctor = DoctorProfile.objects.get(user=user)
@@ -46,6 +47,11 @@ class DocumentListView(APIView):
                 doctor=doctor, status='granted'
             ).values_list('document_id', flat=True)
             docs = Document.objects.filter(id__in=consented_doc_ids, is_deleted=False)
+
+        elif role_id == Role.IS_LAB_MEMBER:
+            # Lab member sees only documents they personally uploaded
+            docs = Document.objects.filter(uploaded_by=user, is_deleted=False)
+
         else:
             # Patient sees their own documents
             docs = Document.objects.filter(owner=user, is_deleted=False)
@@ -58,14 +64,15 @@ class DocumentListView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         user = request.user
+        from users.models import Role
         role_id = user.roles_id
 
-        # Determine owner: if doctor is uploading, owner must be specified via patient_id
-        if role_id == 4:
+        # Doctor or Lab Member uploading → patient_id required
+        if role_id in (Role.IS_DOCTOR, Role.IS_LAB_MEMBER):
             patient_id = request.data.get('patient_id')
             if not patient_id:
                 return Response(
-                    {'message': 'patient_id is required when a doctor uploads a document.'},
+                    {'message': 'patient_id is required when a doctor or lab member uploads a document.'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
             from users.models import User as UserModel
@@ -73,8 +80,9 @@ class DocumentListView(APIView):
                 owner = UserModel.objects.get(pk=patient_id)
             except UserModel.DoesNotExist:
                 return Response({'message': 'Patient not found.'}, status=status.HTTP_404_NOT_FOUND)
-            uploaded_by_role = 'doctor'
+            uploaded_by_role = 'doctor' if role_id == Role.IS_DOCTOR else 'lab_member'
         else:
+            # Patient uploads their own document
             owner = user
             uploaded_by_role = 'patient'
 

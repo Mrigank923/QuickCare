@@ -23,6 +23,7 @@ class Document(models.Model):
     UPLOADED_BY_CHOICES = (
         ('doctor', 'Doctor'),
         ('patient', 'Patient'),
+        ('lab_member', 'Lab Member'),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

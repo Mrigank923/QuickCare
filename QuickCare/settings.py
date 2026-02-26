@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_filters',
     'drf_spectacular',
+    'storages',
     # Local apps
     'users',
     'clinic',
@@ -136,12 +137,33 @@ USE_TZ = True
 
 AUTH_USER_MODEL = 'users.User'
 
-# Static & Media files
+# Static files (served by whitenoise)
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# ─── AWS S3 — Media / Document Storage ───────────────────────────────────────
+AWS_ACCESS_KEY_ID     = config('AWS_ACCESS_KEY_ID', default='')
+AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
+AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
+AWS_S3_REGION_NAME    = config('AWS_S3_REGION_NAME', default='ap-south-1')  # Mumbai
+AWS_S3_CUSTOM_DOMAIN  = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
+AWS_S3_FILE_OVERWRITE = False          # never silently overwrite files
+AWS_DEFAULT_ACL       = None           # use bucket policy, not object ACL
+AWS_S3_OBJECT_PARAMETERS = {
+    'CacheControl': 'max-age=86400',   # browser cache 1 day
+}
+AWS_QUERYSTRING_AUTH  = True           # presigned URLs (private bucket)
+AWS_QUERYSTRING_EXPIRE = 3600          # presigned URL valid for 1 hour
+
+# Route document uploads to S3 when AWS credentials are configured;
+# fall back to local media storage in development.
+if AWS_ACCESS_KEY_ID and AWS_STORAGE_BUCKET_NAME:
+    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+    MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/media/'
+else:
+    MEDIA_URL  = '/media/'
+    MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # CORS
 CORS_ALLOW_ALL_ORIGINS = True
