@@ -52,10 +52,14 @@ class DoctorListView(ListAPIView):
     ordering_fields = ['first_visit_fee', 'experience_years']
 
     def get_queryset(self):
-        # Only list doctors who are active members of at least one clinic
+        # Only list doctors who are active members of at least one clinic.
+        # member_role='' covers rows created via admin before the field was enforced
+        # (migration 0005 backfills these, but this guard handles the window before deploy).
         from clinic.models import ClinicMember
+        from django.db.models import Q
         active_doctor_user_ids = ClinicMember.objects.filter(
-            member_role='doctor', status='active'
+            Q(member_role='doctor') | Q(member_role=''),
+            status='active',
         ).values_list('user_id', flat=True)
 
         return DoctorProfile.objects.filter(
@@ -143,9 +147,10 @@ class DoctorAvailabilityView(APIView):
     def _verify_clinic_membership(self, doctor, clinic_id):
         """Ensure the doctor is an active member of the given clinic."""
         from clinic.models import ClinicMember
+        from django.db.models import Q
         return ClinicMember.objects.filter(
-            user=doctor.user, clinic_id=clinic_id,
-            member_role='doctor', status='active'
+            Q(member_role='doctor') | Q(member_role=''),
+            user=doctor.user, clinic_id=clinic_id, status='active',
         ).exists()
 
     def get(self, request, doctor_id):

@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
+from django.db.models import Q
 from drf_spectacular.utils import extend_schema_field
 from users.serializers import UserSerializer
 from .models import Clinic, ClinicMember, ClinicTimeSlot, ClinicAdmissionDocument
@@ -7,7 +8,8 @@ from .models import Clinic, ClinicMember, ClinicTimeSlot, ClinicAdmissionDocumen
 
 class ClinicSerializer(serializers.ModelSerializer):
     owner = UserSerializer(read_only=True)
-    member_count = serializers.SerializerMethodField()
+    doctor_count = serializers.SerializerMethodField()
+    staff_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Clinic
@@ -15,12 +17,20 @@ class ClinicSerializer(serializers.ModelSerializer):
             'id', 'name', 'slug', 'clinic_type', 'owner',
             'phone', 'email', 'address', 'city', 'state', 'pincode',
             'registration_number', 'logo', 'description',
-            'is_active', 'member_count', 'created_at',
+            'is_active', 'doctor_count', 'staff_count', 'created_at',
         ]
         read_only_fields = ['id', 'slug', 'owner', 'created_at']
 
     @extend_schema_field(serializers.IntegerField())
-    def get_member_count(self, obj):
+    def get_doctor_count(self, obj):
+        """Active doctors only. member_role='' included as backfill-safe fallback."""
+        return obj.members.filter(
+            Q(member_role='doctor') | Q(member_role=''), status='active'
+        ).count()
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_staff_count(self, obj):
+        """All active staff (doctors + lab members + receptionists)."""
         return obj.members.filter(status='active').count()
 
 

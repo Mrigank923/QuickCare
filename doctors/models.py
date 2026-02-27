@@ -75,8 +75,10 @@ class DoctorProfile(models.Model):
     def get_clinics(self):
         """Returns all active clinics this doctor belongs to."""
         from clinic.models import ClinicMember
+        from django.db.models import Q
         return ClinicMember.objects.filter(
-            user=self.user, member_role='doctor', status='active'
+            Q(member_role='doctor') | Q(member_role=''),
+            user=self.user, status='active',
         ).select_related('clinic')
 
 

@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django import forms
 from .models import Clinic, ClinicMember, ClinicTimeSlot, ClinicAdmissionDocument
 
 
@@ -17,8 +18,25 @@ class ClinicAdmin(admin.ModelAdmin):
     )
 
 
+class ClinicMemberAdminForm(forms.ModelForm):
+    """Enforce member_role is always set when editing via admin."""
+
+    class Meta:
+        model = ClinicMember
+        fields = '__all__'
+
+    def clean_member_role(self):
+        value = self.cleaned_data.get('member_role', '').strip()
+        if not value:
+            raise forms.ValidationError(
+                'Member role is required. Choose: doctor, lab_member, or receptionist.'
+            )
+        return value
+
+
 @admin.register(ClinicMember)
 class ClinicMemberAdmin(admin.ModelAdmin):
+    form = ClinicMemberAdminForm
     list_display = [
         'user', 'clinic', 'member_role', 'status', 'department',
         'joined_at', 'left_at', 'added_by', 'created_at'

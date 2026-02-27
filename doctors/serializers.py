@@ -41,8 +41,10 @@ class DoctorProfileSerializer(serializers.ModelSerializer):
     def get_clinics(self, obj):
         """Return a summary of all active clinics this doctor belongs to."""
         from clinic.models import ClinicMember
+        from django.db.models import Q
         memberships = ClinicMember.objects.filter(
-            user=obj.user, member_role='doctor', status='active'
+            Q(member_role='doctor') | Q(member_role=''),
+            user=obj.user, status='active',
         ).select_related('clinic')
         return [
             {
