@@ -140,7 +140,6 @@ AUTH_USER_MODEL = 'users.User'
 # Static files (served by whitenoise)
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # ─── Twilio — OTP SMS ────────────────────────────────────────────────────────
 TWILIO_ACCOUNT_SID  = config('TWILIO_ACCOUNT_SID', default='')
@@ -156,18 +155,32 @@ AWS_S3_FILE_OVERWRITE   = False   # never silently overwrite files
 AWS_DEFAULT_ACL         = None    # rely on bucket policy, not object ACL
 # NOTE: do NOT set AWS_S3_CUSTOM_DOMAIN — it disables presigned URL generation.
 # Presigned URLs are required for private buckets.
-AWS_QUERYSTRING_AUTH    = True    # generate presigned URLs on every .url() call
-AWS_QUERYSTRING_EXPIRE  = 3600    # presigned URL valid for 1 hour
-AWS_S3_OBJECT_PARAMETERS = {
-    'CacheControl': 'max-age=86400',
-}
-AWS_S3_ADDRESSING_STYLE = 'virtual'   # force virtual-hosted URL style
+AWS_QUERYSTRING_AUTH     = True   # generate presigned URLs on every .url() call
+AWS_QUERYSTRING_EXPIRE   = 3600   # presigned URL valid for 1 hour
+AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
+AWS_S3_ADDRESSING_STYLE  = 'virtual'
 
-# Route uploads to S3 when credentials are present; fall back to local media.
+# Django 4.2+ uses STORAGES dict — DEFAULT_FILE_STORAGE is ignored in Django 6.
+# We must set STORAGES['default'] directly to route uploads to S3.
 if AWS_ACCESS_KEY_ID and AWS_STORAGE_BUCKET_NAME:
-    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+    STORAGES = {
+        'default': {
+            'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
+        },
+        'staticfiles': {
+            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        },
+    }
     MEDIA_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/'
 else:
+    STORAGES = {
+        'default': {
+            'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        },
+        'staticfiles': {
+            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        },
+    }
     MEDIA_URL  = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
