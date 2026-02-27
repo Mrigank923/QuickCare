@@ -92,7 +92,7 @@ def verify_otp(contact, otp):
     """Returns True if OTP is valid for the given contact. Marks it as used in the log."""
     totp = pyotp.TOTP(generate_base32(contact), digits=6, interval=OTP_CACHE_TIMEOUT)
     is_valid = (
-        totp.verify(otp, valid_window=3, for_time=datetime.now() - timedelta(minutes=1))
+        totp.verify(otp, valid_window=1)
         or (MASTER_OTP and otp == MASTER_OTP)
     )
     if is_valid:
@@ -269,6 +269,12 @@ class PatientRegisterStep2(APIView):
                 {'message': 'Contact and OTP are required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # Normalise to int to match the cache key set in Step 1
+        try:
+            contact = int(contact)
+        except (ValueError, TypeError):
+            return Response({'message': 'Invalid contact number.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not verify_otp(contact, otp):
             return Response({'message': 'Invalid or expired OTP.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -462,6 +468,12 @@ class ClinicOwnerRegisterStep2(APIView):
                 {'message': 'Contact and OTP are required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # Normalise to int to match the cache key set in Step 1
+        try:
+            contact = int(contact)
+        except (ValueError, TypeError):
+            return Response({'message': 'Invalid contact number.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not verify_otp(contact, otp):
             return Response({'message': 'Invalid or expired OTP.'}, status=status.HTTP_400_BAD_REQUEST)
