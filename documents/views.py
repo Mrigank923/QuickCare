@@ -67,6 +67,14 @@ class DocumentListView(APIView):
         from users.models import Role
         role_id = user.roles_id
 
+        # Only doctors, lab members, and patients can upload documents
+        allowed_roles = (Role.IS_DOCTOR, Role.IS_LAB_MEMBER, Role.IS_PATIENT)
+        if role_id not in allowed_roles:
+            return Response(
+                {'message': 'You do not have permission to upload documents.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         # Doctor or Lab Member uploading → patient_id required
         if role_id in (Role.IS_DOCTOR, Role.IS_LAB_MEMBER):
             patient_id = request.data.get('patient_id')

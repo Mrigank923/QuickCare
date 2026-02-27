@@ -18,6 +18,23 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
         model = Document
         fields = ['title', 'document_type', 'file', 'description', 'appointment']
 
+    def validate_file(self, value):
+        # ── PDF only ──────────────────────────────────────────────────────────
+        content_type = getattr(value, 'content_type', None)
+        name = value.name.lower() if value.name else ''
+
+        if content_type != 'application/pdf' or not name.endswith('.pdf'):
+            raise serializers.ValidationError('Only PDF files are accepted.')
+
+        # ── 5 MB max ──────────────────────────────────────────────────────────
+        max_size = 5 * 1024 * 1024  # 5 MB in bytes
+        if value.size > max_size:
+            raise serializers.ValidationError(
+                f'File size must not exceed 5 MB. Uploaded file is {value.size / (1024*1024):.1f} MB.'
+            )
+
+        return value
+
 
 class DocumentConsentSerializer(serializers.ModelSerializer):
     document_title = serializers.CharField(source='document.title', read_only=True)

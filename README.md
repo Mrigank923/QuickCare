@@ -1,10 +1,10 @@
 # QuickCare — Hospital Management System API
 
-A Django REST Framework backend for managing clinic registrations, appointment booking, and document sharing with patient consent. Built for clinics, hospitals, and diagnostic centres.
+A Django REST Framework backend for managing clinic registrations, appointment booking, document sharing with patient consent, and SMS-based OTP authentication. Built for clinics, hospitals, and diagnostic centres.
 
 ---
 
-## 🏗️ Tech Stack
+## ��️ Tech Stack
 
 | Layer | Technology |
 |---|---|
@@ -12,9 +12,10 @@ A Django REST Framework backend for managing clinic registrations, appointment b
 | Auth | JWT via `djangorestframework-simplejwt` |
 | API Docs | `drf-spectacular` — Swagger UI + ReDoc |
 | Database | PostgreSQL (Render) / SQLite (local dev) |
-| OTP | `pyotp` TOTP (6-digit, 10-min window) |
+| OTP | `pyotp` TOTP (6-digit, 10-min window) + **Twilio SMS delivery** |
+| SMS | Twilio (`twilio==9.10.2`) |
+| File Storage | **AWS S3** via `django-storages` + `boto3` (local fallback: `media/`) |
 | Config | `python-decouple` (.env) |
-| File Uploads | Pillow + Django FileField |
 | Production | Gunicorn + Whitenoise on Render |
 
 ---
@@ -35,7 +36,7 @@ pip install -r requirements.txt
 
 # 4. Configure environment
 cp .env.example .env
-# Edit .env — set USE_SQLITE=True for local dev
+# Edit .env — fill in DB, Twilio, AWS keys (see Environment Variables section)
 
 # 5. Run migrations
 python manage.py migrate
@@ -66,6 +67,43 @@ python manage.py runserver
 
 ---
 
+## 🔑 Environment Variables
+
+Copy `.env.example` to `.env` and fill in:
+
+```env
+# Django
+SECRET_KEY=your-secret-key
+DEBUG=True
+ALLOWED_HOSTS=*
+
+# Database (PostgreSQL)
+DB_NAME=quickcare
+DB_USER=quickcare_user
+DB_PASSWORD=your-db-password
+DB_HOST=your-db-host
+DB_PORT=5432
+
+# OTP bypass for development (leave empty in production)
+MASTER_OTP=888888
+
+# Twilio (SMS delivery for OTP and temp passwords)
+TWILIO_ACCOUNT_SID=your-twilio-account-sid
+TWILIO_AUTH_TOKEN=your-twilio-auth-token
+TWILIO_PHONE_NUMBER=+1XXXXXXXXXX
+
+# AWS S3 (document storage)
+AWS_ACCESS_KEY_ID=your-access-key-id
+AWS_SECRET_ACCESS_KEY=your-secret-access-key
+AWS_STORAGE_BUCKET_NAME=your-bucket-name
+AWS_S3_REGION_NAME=your-region-name
+```
+
+> If `TWILIO_*` vars are empty, OTP and temp passwords are **printed to the console** (dev mode).
+> If `AWS_*` vars are empty, files are stored **locally** in the `media/` folder.
+
+---
+
 ## 🔐 Authentication
 
 All protected endpoints require:
@@ -82,9 +120,9 @@ Tokens are returned after OTP registration or login. The system uses **contact n
 | 1 | Superadmin | Full system access + admin panel |
 | 2 | Admin | Admin panel access |
 | 3 | Patient | Books appointments, owns documents |
-| 4 | Doctor | Auto-registered by clinic owner; belongs to one clinic |
-| 5 | Receptionist | Clinic staff; auto-registered by clinic owner |
-| 6 | Lab Member | Clinic staff; auto-registered by clinic owner |
+| 4 | Doctor | Added by clinic owner; belongs to one clinic |
+| 5 | Receptionist | Clinic staff; added by clinic owner |
+| 6 | Lab Member | Clinic staff; uploads lab reports for patients |
 | 7 | Clinic Owner | Creates & manages clinics, adds staff |
 
 ---
@@ -93,16 +131,16 @@ Tokens are returned after OTP registration or login. The system uses **contact n
 
 ### Patient Registration (3 steps)
 ```
-Step 1: POST /api/users/onboarding/patient/step1/  → contact + name + password → OTP sent
-Step 2: POST /api/users/onboarding/patient/step2/  → contact + otp → account created → 🔑 JWT
-Step 3: PUT  /api/users/onboarding/patient/step3/  → fill profile + medical details
+Step 1: POST  /api/users/onboarding/patient/step1/  → contact + name + password → OTP sent via SMS
+Step 2: POST  /api/users/onboarding/patient/step2/  → contact + otp → account created → JWT
+Step 3: PATCH /api/users/onboarding/patient/step3/  → fill profile + medical details  🔒
 ```
 
 ### Clinic Owner Registration (3 steps)
 ```
-Step 1: POST /api/users/onboarding/clinic/step1/   → contact + name + password → OTP sent
-Step 2: POST /api/users/onboarding/clinic/step2/   → contact + otp → account created → 🔑 JWT
-Step 3: POST /api/clinics/onboarding/step3/        → clinic details + time slots
+Step 1: POST /api/users/onboarding/clinic/step1/    → contact + name + password → OTP sent via SMS
+Step 2: POST /api/users/onboarding/clinic/step2/    → contact + otp → account created → JWT
+Step 3: POST /api/clinics/onboarding/step3/         → clinic details + time slots  🔒
 ```
 
 ### Clinic Staff Auto-Registration (Doctor / Receptionist / Lab Member)
@@ -111,7 +149,8 @@ Clinic owner adds staff via POST /api/clinics/<id>/members/
   ↓
 If the contact is NOT yet registered:
   • Account auto-created with a random 8-character temp password
-  • Temp password is logged in the admin panel (Temp Password Logs)
+  • Temp password sent via Twilio SMS to the staff member's number
+  • Temp password also logged in Admin Panel → Temp Password Logs
   • is_partial_onboarding = True, is_complete_onboarding = False
 
 Staff logs in with their temp password:
@@ -119,27 +158,25 @@ Staff logs in with their temp password:
   ↓  (response includes onboarding_required: true + tokens)
 
 Staff fills in their profile:
-  PUT /api/users/onboarding/member/complete/    🔒
+  PATCH /api/users/onboarding/member/complete/   🔒
   ↓  (is_complete_onboarding = True, new tokens returned)
 ```
 
-> **One-clinic rule:** A doctor can only be an active member of **one clinic** at a time. Trying to add an already-active doctor to a second clinic returns `409 Conflict`.
+> **One-clinic rule:** A doctor can only be an active member of **one clinic** at a time.
 
 ### Login (all existing users — no OTP)
 ```
-POST /api/users/login/   → contact + password → verified against DB → 🔑 JWT
+POST /api/users/login/   → contact + password → JWT
 ```
-
-> OTP is only used during **registration** to verify the phone number. After that, all logins are contact + password.
 
 ---
 
 ## 📋 API Reference
 
-**Base URL (local):** `http://localhost:8000`  
+**Base URL (local):** `http://localhost:8000`
 **Base URL (production):** `https://quickcare-kzis.onrender.com`
 
-All endpoints are prefixed with `/api/`.  
+All endpoints are prefixed with `/api/`.
 🔒 = requires `Authorization: Bearer <token>`
 
 ---
@@ -152,34 +189,24 @@ POST /api/users/login/
 ```
 **Request:**
 ```json
-{
-  "contact": 9876543210,
-  "password": "secret123"
-}
+{ "contact": 9876543210, "password": "secret123" }
 ```
-
-**Response `200` (fully onboarded user):**
+**Response `200` (fully onboarded):**
 ```json
 {
-  "access": "<token>",
-  "refresh": "<token>",
-  "user": { "id": "...", "name": "Raj Kumar", "contact": 9876543210, "roles": { "id": 3, "name": "is_patient" }, "is_complete_onboarding": true }
+  "access": "<token>", "refresh": "<token>",
+  "user": { "id": "...", "name": "Raj Kumar", "contact": 9876543210, "is_complete_onboarding": true }
 }
 ```
-
 **Response `200` (partial-onboarding clinic staff):**
 ```json
 {
-  "message": "Login successful, but your profile is incomplete. Please complete your onboarding to access all features.",
+  "message": "Login successful, but your profile is incomplete.",
   "onboarding_required": true,
   "onboarding_url": "/api/users/onboarding/member/complete/",
-  "access": "<token>",
-  "refresh": "<token>",
-  "user": { "id": "...", "name": "", "roles": { "id": 4, "name": "is_doctor" }, "is_partial_onboarding": true, "is_complete_onboarding": false }
+  "access": "<token>", "refresh": "<token>"
 }
 ```
-
-> When `onboarding_required: true` is returned, use the provided tokens to call `PUT /api/users/onboarding/member/complete/` immediately.
 
 ---
 
@@ -187,7 +214,7 @@ POST /api/users/login/
 ```
 POST /api/users/token/refresh/
 ```
-**Request:** `{ "refresh": "<token>" }`  
+**Request:** `{ "refresh": "<token>" }`
 **Response `200`:** `{ "access": "<token>" }`
 
 ---
@@ -204,8 +231,9 @@ POST /api/users/onboarding/patient/step1/
 ```
 **Response `200`:**
 ```json
-{ "message": "OTP sent to your contact number. Please verify to complete registration.", "contact": 9876543210, "next_step": "/api/users/onboarding/patient/step2/" }
+{ "message": "OTP sent to your contact number.", "contact": 9876543210, "next_step": "/api/users/onboarding/patient/step2/" }
 ```
+> OTP is sent via **Twilio SMS**. In dev mode (no Twilio creds), printed to console.
 
 ---
 
@@ -213,16 +241,13 @@ POST /api/users/onboarding/patient/step1/
 ```
 POST /api/users/onboarding/patient/step2/
 ```
-**Request:**
-```json
-{ "contact": 9876543210, "otp": "482910" }
-```
+**Request:** `{ "contact": 9876543210, "otp": "482910" }`
 **Response `201`:**
 ```json
 {
   "message": "OTP verified. Account created! Please complete your profile.",
   "access": "<token>", "refresh": "<token>",
-  "user": { "id": "...", "name": "Rahul Sharma", "contact": 9876543210, "is_partial_onboarding": true, "is_complete_onboarding": false },
+  "user": { "id": "...", "name": "Rahul Sharma", "is_partial_onboarding": true },
   "next_step": "/api/users/onboarding/patient/step3/"
 }
 ```
@@ -231,34 +256,32 @@ POST /api/users/onboarding/patient/step2/
 
 ### Step 3 — Complete Profile & Medical Details
 ```
-PUT /api/users/onboarding/patient/step3/     🔒
+PATCH /api/users/onboarding/patient/step3/     🔒
 ```
-Saves basic info (gender, age, email, blood group, address) and medical details. Sets `is_complete_onboarding = true`.
+> Requires token with `is_partial_onboarding=True` and role `IS_PATIENT`.
 
 **Request:**
 ```json
 {
   "gender": "male", "age": 28, "email": "rahul@example.com", "blood_group": "B+",
   "address_area": "Near City Hospital", "house_no": "12A", "town": "Jaipur",
-  "state": "Rajasthan", "pincode": "302001", "landmark": "Opp. SBI Bank",
+  "state": "Rajasthan", "pincode": "302001",
   "allergies": "Penicillin", "chronic_conditions": "None",
   "current_medications": "None", "past_surgeries": "Appendectomy 2020",
   "family_history": "Diabetes (father)", "height_cm": 175, "weight_kg": 70.5,
   "emergency_contact_name": "Priya Sharma", "emergency_contact_number": 9123456789
 }
 ```
-All fields except `gender` and `age` are optional.
-
 **Response `200`:**
 ```json
 {
   "message": "Registration complete! Welcome to QuickCare.",
-  "user": { "name": "Rahul Sharma", "gender": "male", "age": 28, "blood_group": "B+", "is_complete_onboarding": true },
-  "medical_profile": { "allergies": "Penicillin", "height_cm": 175, "weight_kg": "70.50" }
+  "user": { "name": "Rahul Sharma", "is_complete_onboarding": true },
+  "medical_profile": { "allergies": "Penicillin", "height_cm": 175 }
 }
 ```
 
-`blood_group` options: `A+` `A-` `B+` `B-` `AB+` `AB-` `O+` `O-`
+`blood_group`: `A+` `A-` `B+` `B-` `AB+` `AB-` `O+` `O-`
 
 ---
 
@@ -276,7 +299,7 @@ POST /api/users/onboarding/clinic/step1/
 ```
 POST /api/users/onboarding/clinic/step2/
 ```
-**Request:** `{ "contact": 9876543210, "otp": "482910" }`  
+**Request:** `{ "contact": 9876543210, "otp": "482910" }`
 **Response `201`:** Returns JWT + `next_step: /api/clinics/onboarding/step3/`
 
 ---
@@ -290,104 +313,73 @@ POST /api/clinics/onboarding/step3/     🔒
 {
   "name": "City Care Clinic", "clinic_type": "clinic",
   "phone": "9876543210", "email": "citycare@example.com",
-  "address": "12, MG Road", "city": "Jaipur",
-  "state": "Rajasthan", "pincode": "302001",
+  "address": "12, MG Road", "city": "Jaipur", "state": "Rajasthan", "pincode": "302001",
   "registration_number": "RJ-MED-2024-001",
   "time_slots": [
-    { "day_of_week": 0, "start_time": "09:00", "end_time": "13:00", "slot_duration_minutes": 15, "max_appointments": 20 },
-    { "day_of_week": 1, "start_time": "09:00", "end_time": "13:00", "slot_duration_minutes": 15, "max_appointments": 20 }
+    { "day_of_week": 0, "start_time": "09:00", "end_time": "13:00", "slot_duration_minutes": 15, "max_appointments": 20 }
   ]
 }
 ```
-
-`clinic_type`: `clinic` | `hospital` | `diagnostic_center` | `polyclinic`  
+`clinic_type`: `clinic` | `hospital` | `diagnostic_center` | `polyclinic`
 `day_of_week`: `0`=Mon `1`=Tue `2`=Wed `3`=Thu `4`=Fri `5`=Sat `6`=Sun
 
 ---
 
 ## 👨‍⚕️ Clinic Staff Auto-Registration
 
-### Add a Member (auto-creates account if not registered)
+### Add a Member
 ```
 POST /api/clinics/<clinic_id>/members/     🔒 (Clinic Owner)
 ```
 **Request:**
 ```json
 {
-  "contact": 9988776655,
-  "name": "Dr. Suresh Yadav",
-  "member_role": "doctor",
-  "department": "Cardiology",
-  "joined_at": "2026-02-25"
+  "contact": 9988776655, "name": "Dr. Suresh Yadav",
+  "member_role": "doctor", "department": "Cardiology", "joined_at": "2026-02-25"
 }
 ```
 
 | Field | Required | Notes |
 |---|---|---|
 | `contact` | ✅ | Phone number of the staff member |
-| `name` | ⚠️ | Required only if the person is NOT yet registered |
+| `name` | ⚠️ | Required only if person is NOT yet registered |
 | `member_role` | ✅ | `doctor` \| `receptionist` \| `lab_member` |
 | `department` | ❌ | Optional |
 | `joined_at` | ❌ | Defaults to today |
-| `notes` | ❌ | Optional |
+| `notes` | ❌ | Optional internal notes |
 
-**Response `201` (new user auto-created):**
+**Response `201`:**
 ```json
 {
-  "id": "b2c3d4e5-...",
-  "user": { "id": "...", "name": "Dr. Suresh Yadav", "contact": 9988776655 },
-  "member_role": "doctor",
-  "status": "active",
-  "department": "Cardiology",
-  "_info": "New account created. A temporary password has been sent to 9988776655. They must log in and complete their profile at /api/users/onboarding/member/complete/"
+  "member_role": "doctor", "status": "active",
+  "_info": "New account created. A temporary password has been sent to 9988776655 via SMS."
 }
 ```
+
+> Temp password also visible in **Admin Panel → Temp Password Logs**.
 
 **Response `409` (doctor already in another clinic):**
 ```json
 { "message": "This doctor is already an active member of \"Apollo Clinic\". A doctor can only belong to one clinic at a time." }
 ```
 
-> The temp password is also visible to superadmin in **Admin Panel → Temp Password Logs**.
-
 ---
 
 ### Complete Member Onboarding
 ```
-PUT /api/users/onboarding/member/complete/     🔒
+PATCH /api/users/onboarding/member/complete/     🔒
 ```
-Called by the clinic staff member after their first login to fill in their profile.
+> Only works for clinic staff with `is_partial_onboarding=True`. Role must be doctor / receptionist / lab_member.
 
-**Request (all fields optional):**
+**Request (all optional):**
 ```json
 {
-  "name": "Dr. Suresh Yadav",
-  "gender": "male",
-  "age": 35,
-  "email": "suresh@example.com",
-  "blood_group": "O+",
-  "specialty": "Cardiology",
-  "qualification": "MBBS, MD",
-  "experience_years": 10,
-  "address_area": "Vaishali Nagar",
-  "house_no": "5B",
-  "town": "Jaipur",
-  "state": "Rajasthan",
-  "pincode": "302021"
+  "name": "Dr. Suresh Yadav", "gender": "male", "age": 35, "email": "suresh@example.com",
+  "specialty": "Cardiology", "qualification": "MBBS, MD", "experience_years": 10,
+  "address_area": "Vaishali Nagar", "town": "Jaipur", "state": "Rajasthan", "pincode": "302021"
 }
 ```
-
-**Response `200`:**
-```json
-{
-  "message": "Onboarding complete! Welcome to QuickCare.",
-  "access": "<token>",
-  "refresh": "<token>",
-  "user": { "id": "...", "name": "Dr. Suresh Yadav", "is_complete_onboarding": true }
-}
-```
-
-> New tokens are issued immediately so the user doesn't need to log in again.
+**Response `200`:** Returns new tokens + `is_complete_onboarding: true`
 
 ---
 
@@ -404,7 +396,7 @@ PUT  /api/users/me/     🔒
 ### Get / Update Medical Profile
 ```
 GET  /api/users/me/medical-profile/     🔒
-PUT  /api/users/me/medical-profile/     🔒
+PUT  /api/users/me/medical-profile/     ��
 ```
 
 ---
@@ -414,6 +406,28 @@ PUT  /api/users/me/medical-profile/     🔒
 GET /api/users/check/?contact=9876543210
 ```
 **Response:** `{ "exists": true }`
+*(Public — no auth required)*
+
+---
+
+### Patient Lookup by Contact  *(Doctor / Lab Member only)*
+```
+GET /api/users/patient/lookup/?contact=9876543210     🔒
+```
+Used by doctors and lab members to find a patient's `id` before uploading documents.
+
+**Response `200`:**
+```json
+{
+  "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "name": "Rahul Sharma",
+  "contact": 9876543210,
+  "gender": "male",
+  "age": 28,
+  "blood_group": "B+"
+}
+```
+> `403` if called by a non-doctor/non-lab-member. `404` if patient not found.
 
 ---
 
@@ -427,13 +441,12 @@ PUT /api/users/password/change/     🔒
 
 ### User Address
 ```
-GET    /api/users/address/           🔒   — list addresses
-POST   /api/users/address/           🔒   — add address
+GET    /api/users/address/           🔒
+POST   /api/users/address/           🔒
 GET    /api/users/address/<id>/      🔒
 PUT    /api/users/address/<id>/      🔒
 DELETE /api/users/address/<id>/      🔒
 ```
-`address_type`: `home` | `work`
 
 ---
 
@@ -466,11 +479,11 @@ DELETE /api/clinics/<clinic_id>/     🔒 (Owner — soft delete)
 
 ### Clinic Members
 ```
-GET  /api/clinics/<clinic_id>/members/                      🔒 (Owner)
-POST /api/clinics/<clinic_id>/members/                      🔒 (Owner) — see auto-registration above
-GET  /api/clinics/<clinic_id>/members/<member_id>/          🔒 (Owner)
-PUT  /api/clinics/<clinic_id>/members/<member_id>/          🔒 (Owner)
-DELETE /api/clinics/<clinic_id>/members/<member_id>/        🔒 (Owner — soft remove, sets left_at)
+GET    /api/clinics/<clinic_id>/members/                  🔒 (Owner)
+POST   /api/clinics/<clinic_id>/members/                  🔒 (Owner)
+GET    /api/clinics/<clinic_id>/members/<member_id>/      🔒 (Owner)
+PUT    /api/clinics/<clinic_id>/members/<member_id>/      🔒 (Owner)
+DELETE /api/clinics/<clinic_id>/members/<member_id>/      🔒 (Owner — soft remove)
 ```
 **GET** query params: `?role=doctor`, `?status=active`
 
@@ -499,7 +512,6 @@ GET /api/clinics/my/memberships/     🔒
 ```
 GET /api/doctors/
 ```
-Only returns doctors who are **active members** of at least one clinic.
 
 | Query Param | Example | Description |
 |---|---|---|
@@ -523,22 +535,6 @@ GET /api/doctors/<id>/
 GET  /api/doctors/me/     🔒 (Doctor)
 PUT  /api/doctors/me/     🔒 (Doctor)
 ```
-> Profile is auto-created when a clinic owner adds you. Use PUT to update specialization and fees.
-
-**PUT Request:**
-```json
-{
-  "specialty": "cardiology",
-  "qualification": "MBBS, MD (Cardiology)",
-  "registration_number": "RJ-12345",
-  "experience_years": 8,
-  "biography": "Experienced cardiologist with 8+ years...",
-  "languages": "English, Hindi",
-  "first_visit_fee": 500,
-  "follow_up_fee": 300,
-  "offers_video_consultation": true
-}
-```
 
 ---
 
@@ -547,10 +543,6 @@ PUT  /api/doctors/me/     🔒 (Doctor)
 GET  /api/doctors/<doctor_id>/availability/              (Public)
 POST /api/doctors/<doctor_id>/availability/     🔒 (Doctor)
 ```
-**POST Request:**
-```json
-{ "clinic": "<uuid>", "day": "monday", "start_time": "09:00", "end_time": "13:00", "slot_duration_minutes": 15, "max_patients": 20 }
-```
 
 ---
 
@@ -558,15 +550,15 @@ POST /api/doctors/<doctor_id>/availability/     🔒 (Doctor)
 ```
 GET /api/doctors/<doctor_id>/availability/slots/?date=2026-03-01&clinic_id=<uuid>
 ```
-**Response:** `{ "doctor": 1, "date": "2026-03-01", "available_slots": ["09:00", "09:15", ...] }`
+**Response:** `{ "available_slots": ["09:00", "09:15", ...] }`
 
 ---
 
 ### Doctor Leaves
 ```
-GET    /api/doctors/me/leaves/                    🔒
-POST   /api/doctors/me/leaves/                    🔒
-DELETE /api/doctors/me/leaves/<leave_id>/         🔒
+GET    /api/doctors/me/leaves/                 🔒
+POST   /api/doctors/me/leaves/                 🔒
+DELETE /api/doctors/me/leaves/<leave_id>/      🔒
 ```
 
 ---
@@ -581,15 +573,12 @@ POST /api/appointments/my/     🔒
 **POST Request:**
 ```json
 {
-  "doctor": 1,
-  "appointment_date": "2026-03-01",
-  "appointment_time": "09:30",
-  "appointment_type": "first_visit",
-  "mode": "in_clinic",
+  "doctor": 1, "appointment_date": "2026-03-01", "appointment_time": "09:30",
+  "appointment_type": "first_visit", "mode": "in_clinic",
   "notes": "Chest pain since 2 days"
 }
 ```
-`appointment_type`: `first_visit` | `follow_up`  
+`appointment_type`: `first_visit` | `follow_up`
 `mode`: `in_clinic` | `video`
 
 ---
@@ -597,47 +586,80 @@ POST /api/appointments/my/     🔒
 ### Patient: Get / Cancel
 ```
 GET   /api/appointments/my/<id>/     🔒
-PATCH /api/appointments/my/<id>/     🔒  — body: { "status": "cancelled" }
+PATCH /api/appointments/my/<id>/     🔒   body: { "status": "cancelled" }
 ```
 
 ---
 
-### Doctor: List Appointments
+### Doctor: Appointments
 ```
-GET /api/appointments/doctor/     🔒
-```
-Query params: `?date=2026-03-01`, `?status=confirmed`, `?from_date=...&to_date=...`
-
----
-
-### Doctor: Get / Update
-```
+GET   /api/appointments/doctor/          🔒
 GET   /api/appointments/doctor/<id>/     🔒
-PATCH /api/appointments/doctor/<id>/     🔒
+PATCH /api/appointments/doctor/<id>/     🔒   body: { "status": "confirmed" }
 ```
-**PATCH:** `{ "status": "confirmed" }`  
+**GET** query params: `?date=2026-03-01`, `?status=confirmed`, `?from_date=...&to_date=...`
 Status options: `pending` | `confirmed` | `completed` | `cancelled` | `no_show`
 
 ---
 
 ## 📄 Documents — `/api/documents/`
 
-> Patient owns documents. Doctors must request consent before accessing. All access is logged.
+> Documents are **PDF only, max 5 MB**. Stored on **AWS S3** (presigned URLs, valid 1 hour).
+> Patients own their documents. Doctors must request consent before accessing. All access is logged.
+
+### Upload Rules by Role
+
+| Role | Can Upload? | Requires `patient_id`? | Sees in List |
+|---|---|---|---|
+| Patient | ✅ | ❌ (uploads their own) | Their own docs |
+| Doctor | ✅ | ✅ | Docs they have active consent for |
+| Lab Member | ✅ | ✅ | Docs they personally uploaded |
+| Others | ❌ 403 | — | — |
+
+---
+
+### How Lab Member / Doctor Gets Patient ID
+
+```
+GET /api/users/patient/lookup/?contact=<patient_phone>     🔒
+```
+Returns the patient's `id`, `name`, `age`, `gender` — use the `id` as `patient_id` in the upload.
+
+---
 
 ### List / Upload
 ```
 GET  /api/documents/     🔒
 POST /api/documents/     🔒  (multipart/form-data)
 ```
-`document_type`: `prescription` | `lab_report` | `imaging` | `discharge_summary` | `insurance` | `other`
+
+**POST form-data fields:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `title` | text | ✅ | e.g. `CBC Report` |
+| `document_type` | text | ✅ | see options below |
+| `file` | file | ✅ | PDF only, max 5 MB |
+| `description` | text | ❌ | optional |
+| `appointment` | text | ❌ | appointment UUID |
+| `patient_id` | text | ✅ (doctor/lab) | patient's user UUID |
+
+`document_type`: `prescription` | `lab_report` | `scan` | `discharge_summary` | `vaccination` | `insurance` | `other`
+
+**Validation errors:**
+- `400` — `"Only PDF files are accepted."`
+- `400` — `"File size must not exceed 5 MB. Uploaded file is X.X MB."`
+- `400` — `"patient_id is required when a doctor or lab member uploads a document."`
+- `403` — `"You do not have permission to upload documents."`
 
 ---
 
 ### Get / Delete
 ```
-GET    /api/documents/<uuid>/     🔒
-DELETE /api/documents/<uuid>/     🔒 (Owner — soft delete)
+GET    /api/documents/<uuid>/     🔒   (owner or consented doctor)
+DELETE /api/documents/<uuid>/     🔒   (owner only — soft delete)
 ```
+> The `file` field in the response is a **presigned S3 URL** valid for 1 hour — open in a browser to download.
 
 ---
 
@@ -654,24 +676,24 @@ POST /api/documents/consent/request/     🔒 (Doctor)
 
 ### Patient: View / Action Consent Requests
 ```
-GET   /api/documents/consent/mine/                          🔒 (Patient)
-PATCH /api/documents/consent/<consent_id>/action/           🔒 (Patient)
+GET   /api/documents/consent/mine/                         🔒 (Patient)
+PATCH /api/documents/consent/<consent_id>/action/          🔒 (Patient)
 ```
-**PATCH:** `{ "action": "grant" }` — options: `grant` | `reject` | `revoke`
+**PATCH:** `{ "action": "granted" }` — options: `granted` | `rejected` | `revoked`
 
 ---
 
 ### Doctor: My Consent Requests
 ```
-GET /api/documents/consent/doctor/     🔒
+GET /api/documents/consent/doctor/     🔒 (Doctor)
 ```
 
 ---
 
 ### Access Audit Log
 ```
-GET /api/documents/access-log/              🔒 (Patient)
-GET /api/documents/<doc_id>/access-log/     🔒 (Patient)
+GET /api/documents/access-log/                🔒 (Patient — all their docs)
+GET /api/documents/<doc_id>/access-log/       🔒 (Patient — specific doc)
 ```
 
 ---
@@ -680,17 +702,82 @@ GET /api/documents/<doc_id>/access-log/     🔒 (Patient)
 
 **URL:** `/admin/`
 
-Superadmin can view:
-
 | Section | What's visible |
 |---|---|
-| **Users** | All user accounts, roles, onboarding status |
+| **Users** | All user accounts, roles, onboarding flags |
 | **OTP Logs** | Every OTP generated, whether used, expiry time |
-| **Temp Password Logs** | Temp passwords issued to auto-registered clinic staff, whether used |
+| **Temp Password Logs** | Temp passwords issued to staff; `is_used` flips after onboarding |
 | **Clinics / Members** | All clinics and their member rosters |
 | **Roles** | Role definitions |
 
-> **Temp Password Logs** are marked `is_used = True` automatically once the staff member completes onboarding via `PUT /api/users/onboarding/member/complete/`.
+---
+
+## 📦 Complete URL Reference
+
+### `/api/users/`
+| Method | URL | Auth | Who |
+|---|---|---|---|
+| POST | `/api/users/login/` | ❌ | All |
+| POST | `/api/users/token/refresh/` | ❌ | All |
+| POST | `/api/users/onboarding/patient/step1/` | ❌ | Public |
+| POST | `/api/users/onboarding/patient/step2/` | ❌ | Public |
+| PATCH | `/api/users/onboarding/patient/step3/` | 🔒 | Patient (partial onboarding) |
+| POST | `/api/users/onboarding/clinic/step1/` | ❌ | Public |
+| POST | `/api/users/onboarding/clinic/step2/` | ❌ | Public |
+| PATCH | `/api/users/onboarding/member/complete/` | 🔒 | Clinic staff (partial onboarding) |
+| GET/PUT | `/api/users/me/` | 🔒 | Logged-in user |
+| GET/PUT | `/api/users/me/medical-profile/` | 🔒 | Patient |
+| GET | `/api/users/check/?contact=...` | ❌ | Public |
+| GET | `/api/users/patient/lookup/?contact=...` | 🔒 | Doctor / Lab Member |
+| PUT | `/api/users/password/change/` | 🔒 | Logged-in user |
+| GET/POST | `/api/users/address/` | 🔒 | Logged-in user |
+| GET/PUT/DELETE | `/api/users/address/<id>/` | 🔒 | Logged-in user |
+
+### `/api/clinics/`
+| Method | URL | Auth | Who |
+|---|---|---|---|
+| GET | `/api/clinics/public/` | ❌ | Public |
+| POST | `/api/clinics/onboarding/step3/` | 🔒 | Clinic Owner |
+| GET/POST | `/api/clinics/` | �� | Clinic Owner |
+| GET/PUT/DELETE | `/api/clinics/<id>/` | 🔒 | Clinic Owner |
+| GET/POST | `/api/clinics/<id>/members/` | 🔒 | Clinic Owner |
+| GET/PUT/DELETE | `/api/clinics/<id>/members/<member_id>/` | 🔒 | Clinic Owner |
+| GET | `/api/clinics/<id>/slots/` | ❌ | Public |
+| POST | `/api/clinics/<id>/slots/` | 🔒 | Clinic Owner |
+| PUT/DELETE | `/api/clinics/<id>/slots/<slot_id>/` | 🔒 | Clinic Owner |
+| GET | `/api/clinics/my/memberships/` | 🔒 | Doctor / Lab Member / Receptionist |
+
+### `/api/doctors/`
+| Method | URL | Auth | Who |
+|---|---|---|---|
+| GET | `/api/doctors/` | ❌ | Public |
+| GET | `/api/doctors/<id>/` | ❌ | Public |
+| GET/PUT | `/api/doctors/me/` | 🔒 | Doctor |
+| GET | `/api/doctors/<id>/availability/` | ❌ | Public |
+| POST | `/api/doctors/<id>/availability/` | 🔒 | Doctor |
+| GET | `/api/doctors/<id>/availability/slots/` | ❌ | Public |
+| GET/POST | `/api/doctors/me/leaves/` | 🔒 | Doctor |
+| DELETE | `/api/doctors/me/leaves/<leave_id>/` | 🔒 | Doctor |
+
+### `/api/appointments/`
+| Method | URL | Auth | Who |
+|---|---|---|---|
+| GET/POST | `/api/appointments/my/` | 🔒 | Patient |
+| GET/PATCH | `/api/appointments/my/<id>/` | 🔒 | Patient |
+| GET | `/api/appointments/doctor/` | 🔒 | Doctor |
+| GET/PATCH | `/api/appointments/doctor/<id>/` | 🔒 | Doctor |
+
+### `/api/documents/`
+| Method | URL | Auth | Who |
+|---|---|---|---|
+| GET/POST | `/api/documents/` | 🔒 | Patient / Doctor / Lab Member |
+| GET/DELETE | `/api/documents/<uuid>/` | 🔒 | Owner / Consented Doctor |
+| POST | `/api/documents/consent/request/` | 🔒 | Doctor |
+| GET | `/api/documents/consent/mine/` | 🔒 | Patient |
+| PATCH | `/api/documents/consent/<id>/action/` | 🔒 | Patient |
+| GET | `/api/documents/consent/doctor/` | 🔒 | Doctor |
+| GET | `/api/documents/access-log/` | 🔒 | Patient |
+| GET | `/api/documents/<doc_id>/access-log/` | 🔒 | Patient |
 
 ---
 
@@ -699,13 +786,13 @@ Superadmin can view:
 ```
 QuickCare/
 ├── QuickCare/          # Project config (settings, urls, wsgi)
-├── users/              # Custom User, OTP auth, JWT, addresses, medical profile, temp password logs
+├── users/              # User model, OTP/JWT auth, addresses, medical profile, temp password logs
 ├── clinic/             # Clinic CRUD, member management, time slots, auto-registration
 ├── doctors/            # Doctor profiles, availability, leaves
-├── appointments/       # Appointment booking
-├── documents/          # Document upload, consent, audit log
+├── appointments/       # Appointment booking & management
+├── documents/          # Document upload (S3), consent system, audit log
 ├── .env                # Local secrets (never commit)
-├── .env.example        # Template for environment variables
+├── .env.example        # Template — copy to .env and fill in
 ├── requirements.txt    # Python dependencies
 └── manage.py
 ```
@@ -717,7 +804,7 @@ QuickCare/
 ```json
 { "message": "Human-readable error description." }
 ```
-Or for field validation:
+Or for field-level validation:
 ```json
 { "field_name": ["This field is required."] }
 ```
@@ -728,52 +815,19 @@ Or for field validation:
 | `401` | Missing or invalid token |
 | `403` | Authenticated but not authorised |
 | `404` | Resource not found |
-| `409` | Conflict (e.g. duplicate member, doctor already in another clinic) |
-
----
-
-## 🔒 Permissions Summary
-
-| Endpoint | Who |
-|---|---|
-| `POST /api/users/login/` | Anyone |
-| `POST /api/users/token/refresh/` | Anyone |
-| `POST /api/users/onboarding/patient/step1-2/` | Anyone |
-| `POST /api/users/onboarding/clinic/step1-2/` | Anyone |
-| `PUT /api/users/onboarding/patient/step3/` | Authenticated (partial onboarding) |
-| `POST /api/clinics/onboarding/step3/` | Authenticated Clinic Owner |
-| `PUT /api/users/onboarding/member/complete/` | Authenticated clinic staff (partial onboarding) |
-| `/api/users/me/` | Logged-in user |
-| `/api/users/me/medical-profile/` | Logged-in user |
-| `/api/clinics/public/` | Anyone |
-| `/api/clinics/<id>/slots/` (GET) | Anyone |
-| `/api/clinics/` (CRUD) | Clinic Owner |
-| `POST /api/clinics/<id>/members/` | Clinic Owner |
-| `GET /api/clinics/<id>/members/` | Clinic Owner |
-| `/api/clinics/my/memberships/` | Doctor / Lab Member / Receptionist |
-| `/api/doctors/` (list/detail) | Anyone |
-| `/api/doctors/me/` | Doctor |
-| `/api/appointments/my/` | Patient |
-| `/api/appointments/doctor/` | Doctor |
-| `/api/documents/` | Patient (own) / Doctor (consented) |
-| `/api/documents/consent/request/` | Doctor |
-| `/api/documents/consent/mine/` | Patient |
-| `/api/documents/consent/<id>/action/` | Patient (owner) |
-| `/api/documents/consent/doctor/` | Doctor |
-| `/api/documents/access-log/` | Patient (own docs) |
+| `409` | Conflict (e.g. doctor already in another clinic) |
 
 ---
 
 ## 📝 Notes
 
-- **OTP** is only used during **registration** to verify the phone number. It is printed to the server console in dev — integrate an SMS/WhatsApp provider (e.g. Twilio, MSG91) before production.
-- **Temp passwords** for auto-registered clinic staff are printed to console in dev and stored in **Admin Panel → Temp Password Logs**.
-- **`MASTER_OTP`** in `.env` bypasses OTP verification in development. Leave empty in production.
-- **`USE_SQLITE=True`** in `.env` uses local SQLite. Set `USE_SQLITE=False` for PostgreSQL in production.
-- **Doctors cannot self-register** — they must be added to a clinic by a Clinic Owner. The account is auto-created on their first addition.
-- **One clinic per doctor** — a doctor can only be an active member of one clinic at a time.
-- **Document access** is always logged. Doctors can only access a file with an active (non-expired, non-revoked) consent record.
-- **Onboarding flags**: `is_partial_onboarding=True` after account creation, `is_complete_onboarding=True` after profile completion. Frontend should use these to redirect users to the correct screen.
-
-
----
+- **OTP** is sent via **Twilio SMS**. Falls back to `print()` in dev if Twilio credentials are not set. `MASTER_OTP` in `.env` bypasses OTP checks in development.
+- **Temp passwords** for auto-registered clinic staff are sent via **Twilio SMS** and stored in **Admin Panel → Temp Password Logs**. Marked `is_used=True` after the member completes onboarding.
+- **Document storage** uses **AWS S3** when `AWS_*` env vars are set. Falls back to local `media/` folder in dev. S3 presigned URLs are valid for **1 hour**.
+- **PDF only, 5 MB max** — document uploads are validated server-side. Non-PDF or oversized files return `400`.
+- **Lab member workflow**: call `GET /api/users/patient/lookup/?contact=<phone>` to get the patient's `id`, then `POST /api/documents/` with that `id` as `patient_id`.
+- **Doctors cannot self-register** — they must be added to a clinic by a Clinic Owner.
+- **One clinic per doctor** — a doctor can only be active in one clinic at a time.
+- **Document consent** — doctors must have a `granted` (non-expired, non-revoked) consent before accessing a patient's document. All access events are logged.
+- **Onboarding flags**: `is_partial_onboarding=True` after account creation, `is_complete_onboarding=True` after profile completion. Frontend should check these to redirect users correctly.
+- **Twilio trial limitation** — Twilio trial accounts can only SMS **verified numbers**. Upgrade to a paid account to send to any number.

@@ -747,3 +747,49 @@ class MemberOnboardingView(APIView):
             'refresh': str(refresh),
             'user': UserSerializer(user).data,
         }, status=status.HTTP_200_OK)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Patient Lookup  (Doctor / Lab Member only)
+# ═══════════════════════════════════════════════════════════════
+
+@extend_schema(
+    tags=['User'],
+    parameters=[OpenApiParameter('contact', str, OpenApiParameter.QUERY, description='Patient phone number (10 digits)')],
+    responses={200: UserSerializer},
+)
+class PatientLookupView(APIView):
+    """
+    Search a patient by their contact number.
+    Only accessible by doctors and lab members.
+    Returns the patient's id, name, and contact — enough to pass as patient_id when uploading documents.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        role_id = request.user.roles_id
+        allowed_roles = (Role.IS_DOCTOR, Role.IS_LAB_MEMBER)
+        if role_id not in allowed_roles:
+            return Response(
+                {'message': 'Only doctors and lab members can look up patients.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        contact = request.query_params.get('contact', '').strip()
+        if not contact:
+            return Response({'message': 'contact query param is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            patient = User.objects.get(contact=contact, roles_id=Role.IS_PATIENT)
+        except User.DoesNotExist:
+            return Response({'message': 'No patient found with this contact number.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            'id': str(patient.id),
+            'name': patient.name,
+            'contact': patient.contact,
+            'gender': patient.gender,
+            'age': patient.age,
+            'blood_group': patient.blood_group,
+        }, status=status.HTTP_200_OK)
+

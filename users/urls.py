@@ -32,6 +32,7 @@ urlpatterns = [
     # ── Utilities ─────────────────────────────────────────────
     path('check/', views.CheckUserByContact.as_view(), name='check-user'),
     path('password/change/', views.ChangePassword.as_view(), name='change-password'),
+    path('patient/lookup/', views.PatientLookupView.as_view(), name='patient-lookup'),
 
     # ── Address ──────────────────────────────────────────────
     path('address/', views.UserAddressList.as_view(), name='address-list'),
