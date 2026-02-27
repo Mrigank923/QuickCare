@@ -142,6 +142,11 @@ STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
+# ─── Twilio — OTP SMS ────────────────────────────────────────────────────────
+TWILIO_ACCOUNT_SID  = config('TWILIO_ACCOUNT_SID', default='')
+TWILIO_AUTH_TOKEN   = config('TWILIO_AUTH_TOKEN', default='')
+TWILIO_PHONE_NUMBER = config('TWILIO_PHONE_NUMBER', default='')
+
 # ─── AWS S3 — Media / Document Storage ───────────────────────────────────────
 AWS_ACCESS_KEY_ID     = config('AWS_ACCESS_KEY_ID', default='')
 AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')

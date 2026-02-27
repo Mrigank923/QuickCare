@@ -4,6 +4,7 @@ import random
 import string
 from datetime import datetime, timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model, authenticate
 from django.core.cache import cache
 from django.db.models import Q
@@ -14,6 +15,8 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from decouple import config
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
+from twilio.rest import Client as TwilioClient
+from twilio.base.exceptions import TwilioRestException
 
 from .models import UserAddress, Role, PatientMedicalProfile, OTPLog, TempPasswordLog
 from .serializers import (
@@ -37,12 +40,44 @@ def generate_base32(contact):
     return base64.b32encode(b)
 
 
+def _twilio_send_sms(to_number, body):
+    """
+    Send an SMS via Twilio.
+    Returns (success: bool, error_msg: str|None).
+    Falls back to print() in dev if credentials are not configured.
+    """
+    sid   = settings.TWILIO_ACCOUNT_SID
+    token = settings.TWILIO_AUTH_TOKEN
+    from_ = settings.TWILIO_PHONE_NUMBER
+
+    if not (sid and token and from_):
+        # Dev mode — just print
+        print(f"[SMS-DEV] To: {to_number}  Body: {body}")
+        return True, None
+
+    try:
+        client = TwilioClient(sid, token)
+        client.messages.create(
+            to=f'+91{to_number}' if not str(to_number).startswith('+') else str(to_number),
+            from_=from_,
+            body=body,
+        )
+        return True, None
+    except TwilioRestException as e:
+        print(f"[TWILIO ERROR] {e}")
+        return False, str(e)
+    except Exception as e:
+        print(f"[TWILIO ERROR] {e}")
+        return False, str(e)
+
+
 def send_otp(contact, purpose='patient_register'):
-    """Generate and 'send' OTP. Saves to OTPLog for superadmin visibility."""
+    """Generate OTP, send via Twilio, and save to OTPLog."""
     totp = pyotp.TOTP(generate_base32(contact), digits=6, interval=OTP_CACHE_TIMEOUT)
     otp = totp.now()
-    # TODO: integrate SMS/WhatsApp (e.g. Twilio, MSG91) before production
-    print(f"[OTP] Contact: {contact}  OTP: {otp}")
+
+    sms_sent, _ = _twilio_send_sms(contact, f'Your QuickCare OTP is: {otp}. Valid for 10 minutes. Do not share it with anyone.')
+
     # Save to DB for superadmin visibility
     OTPLog.objects.create(
         contact=contact,
@@ -50,7 +85,7 @@ def send_otp(contact, purpose='patient_register'):
         purpose=purpose,
         expires_at=timezone.now() + timedelta(seconds=OTP_CACHE_TIMEOUT),
     )
-    return otp
+    return otp, sms_sent
 
 
 def verify_otp(contact, otp):
@@ -74,9 +109,13 @@ def generate_temp_password():
 
 
 def send_temp_password(contact, password, added_by=None):
-    """'Send' temp password to the member's contact. Saves to DB for admin visibility."""
-    # TODO: integrate SMS/WhatsApp before production
-    print(f"[TEMP PASSWORD] Contact: {contact}  Password: {password}")
+    """Send temp password via Twilio and save to TempPasswordLog."""
+    _twilio_send_sms(
+        contact,
+        f'You have been added to a clinic on QuickCare. '
+        f'Your temporary password is: {password}. '
+        f'Please login and complete your profile.'
+    )
     TempPasswordLog.objects.create(
         contact=contact,
         temp_password=password,
@@ -196,11 +235,12 @@ class PatientRegisterStep1(APIView):
             'password': data['password'],
         }, timeout=OTP_CACHE_TIMEOUT)
 
-        send_otp(contact, purpose='patient_register')
+        _, sms_sent = send_otp(contact, purpose='patient_register')
 
         return Response({
             'message': 'OTP sent to your contact number. Please verify to complete registration.',
             'contact': contact,
+            'sms_sent': sms_sent,
             'next_step': '/api/users/onboarding/patient/step2/',
         }, status=status.HTTP_200_OK)
 
@@ -387,11 +427,12 @@ class ClinicOwnerRegisterStep1(APIView):
             'password': data['password'],
         }, timeout=OTP_CACHE_TIMEOUT)
 
-        send_otp(contact, purpose='clinic_register')
+        _, sms_sent = send_otp(contact, purpose='clinic_register')
 
         return Response({
             'message': 'OTP sent to your contact number. Please verify to complete registration.',
             'contact': contact,
+            'sms_sent': sms_sent,
             'next_step': '/api/users/onboarding/clinic/step2/',
         }, status=status.HTTP_200_OK)
 
