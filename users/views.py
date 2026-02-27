@@ -353,7 +353,8 @@ class PatientRegisterStep3(APIView):
         user.age = data.get('age', user.age)
         user.email = data.get('email', user.email)
         user.blood_group = data.get('blood_group', user.blood_group)
-        user.is_partial_onboarding = False
+        # is_partial_onboarding stays True — it marks the account was created via OTP.
+        # Only is_complete_onboarding changes to signal the profile is fully filled.
         user.is_complete_onboarding = True
         user.save()
 
@@ -702,7 +703,8 @@ class MemberOnboardingView(APIView):
         if data.get('blood_group'):
             user.blood_group = data['blood_group']
 
-        user.is_partial_onboarding = False
+        # is_partial_onboarding stays True — it marks the account was created by clinic owner.
+        # Only is_complete_onboarding changes to signal the profile is fully filled.
         user.is_complete_onboarding = True
         user.save()
 

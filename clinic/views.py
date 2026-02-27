@@ -427,11 +427,12 @@ class ClinicOnboardingStep2(APIView):
             ts = ClinicTimeSlot.objects.create(clinic=clinic, **slot)
             created_slots.append(ts)
 
-        # Mark owner as fully onboarded
+        # Mark owner as fully onboarded.
+        # is_partial_onboarding stays True — it marks the account was created via OTP.
+        # Only is_complete_onboarding changes to signal the profile is fully set up.
         user = request.user
-        user.is_partial_onboarding = False
         user.is_complete_onboarding = True
-        user.save(update_fields=['is_partial_onboarding', 'is_complete_onboarding'])
+        user.save(update_fields=['is_complete_onboarding'])
 
         return Response({
             'message': 'Clinic registration complete! You can now add doctors from your dashboard.',
