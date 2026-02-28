@@ -7,7 +7,8 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter
 from .models import Document, DocumentConsent, DocumentAccessLog
 from .serializers import (
     DocumentSerializer, DocumentUploadSerializer,
-    DocumentConsentSerializer, ConsentActionSerializer, DocumentAccessLogSerializer,
+    DocumentConsentSerializer, ConsentActionSerializer,
+    DocumentAccessLogSerializer, DocumentMetaSerializer,
 )
 
 
@@ -336,6 +337,77 @@ class DoctorConsentListView(APIView):
             return Response({'message': 'Doctor profile not found.'}, status=status.HTTP_404_NOT_FOUND)
         consents = DocumentConsent.objects.filter(doctor=doctor).select_related('document', 'patient')
         return Response(DocumentConsentSerializer(consents, many=True).data)
+
+
+# ─────────────────────────────────────────────
+# Doctor browses patient document metadata (no file, no content)
+# ─────────────────────────────────────────────
+
+@extend_schema(
+    tags=['Document Consent'],
+    responses={200: DocumentMetaSerializer},
+    parameters=[
+        OpenApiParameter('patient_id', str, OpenApiParameter.QUERY,
+            description='UUID of the patient whose document list to browse',
+            required=True),
+    ]
+)
+class PatientDocumentListForDoctorView(APIView):
+    """
+    Doctor: browse a patient's document metadata (title, type, id — NO file URL).
+
+    Step 1 of the consent flow:
+      1. Doctor calls GET /api/documents/patient-docs/?patient_id=<uuid>
+         → sees document titles + types + their current consent_status for each
+      2. Doctor picks the doc IDs they need and calls POST /api/documents/consent/request/
+
+    Rules:
+      - Only doctors can call this.
+      - Returns document title, type, description, upload date, and current consent status.
+      - Never returns the file URL — patient privacy is preserved.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from doctors.models import DoctorProfile
+        from users.models import Role
+
+        if request.user.roles_id != Role.IS_DOCTOR:
+            return Response(
+                {'message': 'Only doctors can browse patient documents.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            doctor = DoctorProfile.objects.get(user=request.user)
+        except DoctorProfile.DoesNotExist:
+            return Response({'message': 'Doctor profile not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        patient_id = request.query_params.get('patient_id', '').strip()
+        if not patient_id:
+            return Response(
+                {'message': 'patient_id query param is required. '
+                            'Use GET /api/users/patient/lookup/?contact=<number> first to get the patient UUID.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from users.models import User as UserModel
+        try:
+            patient = UserModel.objects.get(pk=patient_id, roles_id=Role.IS_PATIENT)
+        except UserModel.DoesNotExist:
+            return Response({'message': 'Patient not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        docs = Document.objects.filter(owner=patient, is_deleted=False).order_by('-created_at')
+        serializer = DocumentMetaSerializer(docs, many=True, context={'doctor': doctor})
+        return Response({
+            'patient': {
+                'id': str(patient.id),
+                'name': patient.name,
+                'contact': patient.contact,
+            },
+            'documents': serializer.data,
+            'total': docs.count(),
+        })
 
 
 @extend_schema(tags=['Documents'], responses={200: DocumentAccessLogSerializer})

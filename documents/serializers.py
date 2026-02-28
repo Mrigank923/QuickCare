@@ -60,6 +60,34 @@ class ConsentActionSerializer(serializers.Serializer):
     expires_at = serializers.DateTimeField(required=False, allow_null=True)
 
 
+class DocumentMetaSerializer(serializers.ModelSerializer):
+    """
+    Safe document listing for doctors — exposes only metadata, never the file URL.
+    Doctor uses this to know which document IDs to request consent for.
+    """
+    consent_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Document
+        fields = [
+            'id', 'title', 'document_type', 'description',
+            'uploaded_by_role', 'created_at', 'consent_status',
+        ]
+
+    def get_consent_status(self, obj):
+        """
+        Returns the current consent status this doctor has for the document,
+        or None if no request has been made yet.
+        """
+        doctor = self.context.get('doctor')
+        if not doctor:
+            return None
+        consent = DocumentConsent.objects.filter(
+            document=obj, doctor=doctor
+        ).order_by('-created_at').first()
+        return consent.status if consent else None
+
+
 class DocumentAccessLogSerializer(serializers.ModelSerializer):
     accessed_by_name = serializers.CharField(source='accessed_by.name', read_only=True)
 
