@@ -9,4 +9,7 @@ urlpatterns = [
     # Doctor routes
     path('doctor/', views.DoctorAppointmentListView.as_view(), name='doctor-appointments'),
     path('doctor/<int:pk>/', views.DoctorAppointmentDetailView.as_view(), name='doctor-appointment-detail'),
+
+    # Clinic owner dashboard
+    path('clinic/<uuid:clinic_id>/dashboard/', views.ClinicAppointmentDashboardView.as_view(), name='clinic-appointment-dashboard'),
 ]

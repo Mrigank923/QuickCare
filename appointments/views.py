@@ -1,9 +1,11 @@
+from django.utils import timezone
 from rest_framework import status, permissions, filters
 from rest_framework.generics import ListAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from django_filters import rest_framework as df_filters
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 from users.models import Role
 from doctors.models import DoctorProfile
@@ -174,3 +176,100 @@ class DoctorAppointmentDetailView(APIView):
             serializer.save()
             return Response(AppointmentSerializer(appt).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ─────────────────────────────────────────────
+# Clinic Owner: Dashboard — today's appointments
+# ─────────────────────────────────────────────
+
+@extend_schema(
+    tags=['Appointments'],
+    parameters=[
+        OpenApiParameter('date', str, OpenApiParameter.QUERY,
+            description='Date in YYYY-MM-DD format. Defaults to today.', required=False),
+        OpenApiParameter('status', str, OpenApiParameter.QUERY,
+            description='Filter by status: pending, confirmed, completed, cancelled, no_show',
+            required=False),
+        OpenApiParameter('doctor_id', int, OpenApiParameter.QUERY,
+            description='Filter by a specific doctor (DoctorProfile id)', required=False),
+    ]
+)
+class ClinicAppointmentDashboardView(APIView):
+    """
+    Clinic Owner 🔒 — see all appointments for their clinic.
+
+    ?date=YYYY-MM-DD  (default: today)
+    ?status=confirmed
+    ?doctor_id=5
+
+    Response includes:
+      - summary counts per status
+      - full appointment list ordered by time
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, clinic_id):
+        from clinic.models import Clinic, ClinicMember
+
+        # ── Auth: must be the clinic owner ───────────────────────────
+        try:
+            clinic = Clinic.objects.get(pk=clinic_id, is_active=True)
+        except Clinic.DoesNotExist:
+            return Response({'message': 'Clinic not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if clinic.owner != request.user:
+            return Response({'message': 'Only the clinic owner can access this dashboard.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        # ── Get all active doctors in this clinic ─────────────────────
+        from django.db.models import Q
+        active_doctor_user_ids = ClinicMember.objects.filter(
+            Q(member_role='doctor') | Q(member_role=''),
+            clinic=clinic, status='active',
+        ).values_list('user_id', flat=True)
+
+        clinic_doctors = DoctorProfile.objects.filter(
+            user_id__in=active_doctor_user_ids
+        )
+
+        # ── Date filter (default today) ───────────────────────────────
+        date_param = request.query_params.get('date')
+        if date_param:
+            try:
+                from datetime import date
+                target_date = date.fromisoformat(date_param)
+            except ValueError:
+                return Response({'message': 'Invalid date format. Use YYYY-MM-DD.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+        else:
+            target_date = timezone.localdate()
+
+        # ── Build queryset ────────────────────────────────────────────
+        qs = Appointment.objects.filter(
+            doctor__in=clinic_doctors,
+            appointment_date=target_date,
+        ).select_related('patient', 'doctor__user').order_by('appointment_time')
+
+        # Optional filters
+        status_f = request.query_params.get('status')
+        doctor_id_f = request.query_params.get('doctor_id')
+
+        if status_f:
+            qs = qs.filter(status=status_f)
+        if doctor_id_f:
+            qs = qs.filter(doctor_id=doctor_id_f)
+
+        # ── Summary counts ────────────────────────────────────────────
+        all_today = Appointment.objects.filter(
+            doctor__in=clinic_doctors,
+            appointment_date=target_date,
+        )
+        summary = {s: all_today.filter(status=s).count() for s, _ in Appointment.STATUS_CHOICES}
+        summary['total'] = all_today.count()
+
+        return Response({
+            'clinic': clinic.name,
+            'date': str(target_date),
+            'summary': summary,
+            'appointments': AppointmentSerializer(qs, many=True).data,
+        })
