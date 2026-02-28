@@ -134,8 +134,29 @@ class DoctorAppointmentListView(APIView):
 
 
 class DoctorAppointmentDetailView(APIView):
-    """Doctor: confirm, complete, add notes, or cancel an appointment."""
+    """
+    Doctor: view or update a specific appointment.
+
+    GET  – full appointment detail
+    PATCH – update status / add notes / mark paid
+
+    Allowed status transitions for doctor:
+      pending   → confirmed, cancelled
+      confirmed → completed, cancelled, no_show
+      completed → (terminal — no further changes)
+      cancelled → (terminal)
+      no_show   → (terminal)
+    """
     permission_classes = [permissions.IsAuthenticated]
+
+    # Valid status transitions a doctor can make
+    ALLOWED_TRANSITIONS = {
+        'pending':   ['confirmed', 'cancelled'],
+        'confirmed': ['completed', 'cancelled', 'no_show'],
+        'completed': [],
+        'cancelled': [],
+        'no_show':   [],
+    }
 
     def _get_doctor(self, user):
         try:
@@ -158,7 +179,7 @@ class DoctorAppointmentDetailView(APIView):
             return Response({'message': 'Appointment not found.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(AppointmentSerializer(appt).data)
 
-    def put(self, request, pk):
+    def patch(self, request, pk):
         doctor = self._get_doctor(request.user)
         if not doctor:
             return Response({'message': 'Doctor profile not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -167,9 +188,27 @@ class DoctorAppointmentDetailView(APIView):
             return Response({'message': 'Appointment not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         data = request.data.copy()
-        # If doctor is cancelling, record cancelled_by
-        if data.get('status') == 'cancelled':
-            data['cancelled_by'] = 'doctor'
+        new_status = data.get('status')
+
+        # Validate status transition if status is being changed
+        if new_status and new_status != appt.status:
+            allowed = self.ALLOWED_TRANSITIONS.get(appt.status, [])
+            if not allowed:
+                return Response(
+                    {'message': f'Appointment is already "{appt.status}". No further status changes allowed.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if new_status not in allowed:
+                return Response(
+                    {
+                        'message': f'Cannot change status from "{appt.status}" to "{new_status}".',
+                        'allowed_transitions': allowed,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            # Auto-set cancelled_by when doctor cancels
+            if new_status == 'cancelled':
+                data['cancelled_by'] = 'doctor'
 
         serializer = AppointmentUpdateSerializer(appt, data=data, partial=True)
         if serializer.is_valid():
