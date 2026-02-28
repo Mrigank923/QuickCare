@@ -2,7 +2,7 @@ from django.utils import timezone
 from rest_framework import status, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 from .models import Document, DocumentConsent, DocumentAccessLog
 from .serializers import (
@@ -22,11 +22,26 @@ def _get_client_ip(request):
 # Documents: Upload & List
 # ─────────────────────────────────────────────
 
-@extend_schema(tags=['Documents'], responses={200: DocumentSerializer})
+@extend_schema(
+    tags=['Documents'],
+    responses={200: DocumentSerializer},
+    parameters=[
+        OpenApiParameter('document_type', str, OpenApiParameter.QUERY,
+            description='Filter by type: prescription, lab_report, scan, discharge_summary, vaccination, insurance, other',
+            required=False),
+        OpenApiParameter('uploaded_by_role', str, OpenApiParameter.QUERY,
+            description='Filter by uploader role: doctor, patient, lab_member',
+            required=False),
+    ]
+)
 class DocumentListView(APIView):
     """
     GET  – patient: own documents | doctor: documents they have consent to
     POST – patient or doctor uploads a document for a patient
+
+    Query params (patient only):
+      ?document_type=prescription   → prescriptions only
+      ?uploaded_by_role=doctor      → docs uploaded by a doctor
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -55,6 +70,29 @@ class DocumentListView(APIView):
         else:
             # Patient sees their own documents
             docs = Document.objects.filter(owner=user, is_deleted=False)
+
+            # Optional filters
+            doc_type = request.query_params.get('document_type')
+            uploader_role = request.query_params.get('uploaded_by_role')
+
+            valid_doc_types = [c[0] for c in Document.DOC_TYPE_CHOICES]
+            valid_uploader_roles = [c[0] for c in Document.UPLOADED_BY_CHOICES]
+
+            if doc_type:
+                if doc_type not in valid_doc_types:
+                    return Response(
+                        {'message': f'Invalid document_type. Choices: {valid_doc_types}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                docs = docs.filter(document_type=doc_type)
+
+            if uploader_role:
+                if uploader_role not in valid_uploader_roles:
+                    return Response(
+                        {'message': f'Invalid uploaded_by_role. Choices: {valid_uploader_roles}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                docs = docs.filter(uploaded_by_role=uploader_role)
 
         return Response(DocumentSerializer(docs, many=True).data)
 
