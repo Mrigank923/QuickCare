@@ -1,7 +1,7 @@
 from datetime import timedelta, datetime
 
 from django.contrib import admin
-from django.utils.html import format_html
+from django.utils.html import format_html, mark_safe
 
 from .models import DoctorProfile, DoctorAvailability, DoctorLeave
 
@@ -56,8 +56,8 @@ class DoctorProfileAdmin(admin.ModelAdmin):
     def slot_count(self, obj):
         count = obj.availability.filter(is_active=True).count()
         if count == 0:
-            return format_html('<span style="color:red;">⚠ No slots set</span>')
-        return format_html('<span style="color:green;">✔ {} day(s)</span>', count)
+            return mark_safe('<span style="color:red;">\u26a0 No slots set</span>')
+        return format_html('<span style="color:green;">\u2714 {}\u00a0day(s)</span>', count)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
